@@ -1,22 +1,26 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Throwdown Hub — Single-file Demo App.jsx (Role-based UX + Points Leaderboard)
+ * Throwdown Hub — Single-file Demo App.jsx (Ranks Leaderboard + Role Workflows)
  *
- * Key features:
- * - Workout scaling per division (overrides for description/standards/equipment/unit/cap/sort)
- * - Athletes/Teams submit online scores (raw values)
- * - Judges review submissions and propose adjusted values
- * - Head Judge confirms adjustments into FINAL scores
- * - Organiser controls: workouts, scaling, live windows, leaderboard visibility, submissions
- * - Leaderboards are points-based (per workout ranking -> points) to aggregate mixed score types
- * - Build-safe: no external UI libs, no alias imports, clean syntax, Vite/React friendly.
+ * Roles: athlete, judge, head_judge, organiser
+ *
+ * Key behaviour changes (per your request):
+ * - Removed spectator + team_manager roles
+ * - Athlete selects workout via dropdown; submit is a workout-specific popup modal
+ * - Leaderboard is rank-based: 1 = best per workout; overall = lowest total rank wins
+ * - Directory + Settings/Admin tabs only visible to organiser
+ * - Judge + Head Judge have no leaderboard views
+ * - Organiser controls quick controls, scheduling (release/close), publish leaderboard
+ * - Workouts hidden from athletes until release time
+ * - If a workout hasn't hit completion/close date, scores are blurred + excluded from totals
+ * - Leaderboard only visible to athletes when organiser has published AND judging complete
  */
 
 /* ================================
    LOCAL STORAGE
 ================================ */
-const LS_KEY = "tdh_single_file_demo_v6_points";
+const LS_KEY = "tdh_single_file_demo_v7_ranks";
 
 function safeParse(json, fallback) {
   try {
@@ -95,32 +99,19 @@ function downloadJson(filename, obj) {
   URL.revokeObjectURL(url);
 }
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function defaultWindow(hoursFromNowOpen, hoursDuration) {
-  const now = new Date();
-  const open = new Date(now.getTime() + hoursFromNowOpen * 3600 * 1000);
-  const close = new Date(open.getTime() + hoursDuration * 3600 * 1000);
-  return { openAt: open.toISOString(), closeAt: close.toISOString() };
-}
-
 function parseTimeToSeconds(v) {
   // Accept:
   // - number (seconds)
   // - "mm:ss"
   // - "hh:mm:ss"
-  // - "ss" (as string)
+  // - "ss" (string)
   if (v == null) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   const s = String(v).trim();
   if (!s) return null;
 
-  // numeric string
   if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
 
-  // time formats
   const parts = s.split(":").map((x) => x.trim());
   if (parts.length === 2 || parts.length === 3) {
     const nums = parts.map((p) => (p === "" ? NaN : Number(p)));
@@ -132,18 +123,24 @@ function parseTimeToSeconds(v) {
     const [hh, mm, ss] = nums;
     return hh * 3600 + mm * 60 + ss;
   }
-
   return null;
 }
 
 /* ================================
    ROLES
 ================================ */
-const ROLES = ["spectator", "athlete", "team_manager", "judge", "head_judge", "organiser"];
+const ROLES = ["athlete", "judge", "head_judge", "organiser"];
 
 /* ================================
    DEFAULT DEMO DATA
 ================================ */
+function defaultSchedule(hoursFromNowRelease, hoursDuration) {
+  const now = new Date();
+  const release = new Date(now.getTime() + hoursFromNowRelease * 3600 * 1000);
+  const close = new Date(release.getTime() + hoursDuration * 3600 * 1000);
+  return { releaseAt: release.toISOString(), closeAt: close.toISOString() };
+}
+
 const DEFAULT_DATA = (() => {
   const compId = "comp_london";
   const comp = {
@@ -152,7 +149,7 @@ const DEFAULT_DATA = (() => {
     date: "2026-06-20",
     location: "London",
     description:
-      "Role demo: athletes submit online scores, judges adjust, head judge confirms. Points leaderboard aggregates across workouts.",
+      "Athletes submit scores, judges adjust, head judge finalises. Leaderboard is rank-based (1 best). Workouts release on schedule.",
     divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
     judgePool: ["Judge Alex", "Judge Sam", "Judge Priya"],
     headJudgePool: ["Head Judge Casey"],
@@ -161,7 +158,7 @@ const DEFAULT_DATA = (() => {
         id: "w1",
         name: "WOD 1 — Engine",
         divisionNotes: "All divisions",
-        scoreType: "time", // time, reps, load, distance, calories
+        scoreType: "time",
         sort: "asc",
         unit: "time (mm:ss)",
         cap: "12:00",
@@ -171,16 +168,13 @@ const DEFAULT_DATA = (() => {
         description:
           "For time: 30/24 cal row, 50 wall balls, 30 pull-ups. Time stops when last pull-up is complete.",
         media: { demoVideoUrl: "", scorecardUrl: "" },
-        liveWindow: defaultWindow(-2, 72),
+        schedule: defaultSchedule(-8, 24), // already released, closes in 24h
         scalingByDivision: {
           Scaled: {
             equipment: ["Row erg", "Wall ball", "Pull-up bar / band"],
             standards: ["Jumping pull-ups allowed", "Wall ball lighter"],
             description:
               "For time: 24/18 cal row, 50 wall balls, 30 jumping pull-ups. Time stops when last rep is complete.",
-          },
-          "Masters 35+": {
-            standards: ["Chest-to-bar not required unless stated", "Movement standards apply"],
           },
         },
       },
@@ -197,7 +191,7 @@ const DEFAULT_DATA = (() => {
         standards: ["Full lockout required", "Video shows plates clearly"],
         description: "Find a 1RM clean & jerk in 10 minutes.",
         media: { demoVideoUrl: "", scorecardUrl: "" },
-        liveWindow: defaultWindow(-2, 72),
+        schedule: defaultSchedule(-6, 18),
         scalingByDivision: {
           Scaled: {
             description: "Find a heavy clean & jerk (not necessarily 1RM) in 10 minutes.",
@@ -218,15 +212,12 @@ const DEFAULT_DATA = (() => {
         description:
           "8-min AMRAP: 30 double-unders, 12 box jumps, 9 American KB swings. Score = total reps.",
         media: { demoVideoUrl: "", scorecardUrl: "" },
-        liveWindow: defaultWindow(-2, 72),
+        schedule: defaultSchedule(+6, 24), // not yet released (athletes can't see)
         scalingByDivision: {
           Scaled: {
             description:
               "8-min AMRAP: 60 single-unders, 12 step-ups, 9 Russian KB swings. Score = total reps.",
             standards: ["Step-ups allowed", "KB swing to shoulder height (Russian)"],
-          },
-          Intermediate: {
-            standards: ["Double-unders required", "KB American swings"],
           },
         },
       },
@@ -239,13 +230,7 @@ const DEFAULT_DATA = (() => {
       { name: "Olivia Green", division: "Masters 35+" },
       { name: "Ethan Taylor", division: "Intermediate" },
     ],
-    teams: [
-      { name: "Team Docklands", division: "RX", members: ["Ava Johnson", "Liam Patel"] },
-      { name: "Team Fife Fire", division: "Intermediate", members: ["Noah Smith", "Ethan Taylor"] },
-      { name: "Team Scaled Squad", division: "Scaled", members: ["Mia Brown", "Olivia Green"] },
-    ],
     submissions: {
-      // workoutId -> participantName -> submission
       w1: {
         "Ava Johnson": {
           value: "08:44",
@@ -298,7 +283,6 @@ const DEFAULT_DATA = (() => {
       w3: {},
     },
     adjustments: [
-      // example pending adjustment (head judge will approve/reject)
       {
         id: "adj_seed_1",
         workoutId: "w1",
@@ -306,7 +290,6 @@ const DEFAULT_DATA = (() => {
         adjustedValue: "09:12",
         note: "No-rep on 5 pull-ups (reps redone). Added time.",
         judgeName: "Judge Alex",
-        judgeRole: "judge",
         createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
         status: "awaiting_head_judge",
         decidedAt: "",
@@ -316,21 +299,18 @@ const DEFAULT_DATA = (() => {
     ],
     finalScores: {
       // workoutId -> participant -> final
-      // w1: { "Ava Johnson": { value: "08:44", finalAt: "...", source: "submission", decidedBy: "system", note: "" } }
+      // w1: { "Ava Johnson": { value: "08:44", finalAt: "...", source: "submission", decidedBy: "Head Judge", note: "" } }
     },
     audit: [],
   };
 
   return {
-    meta: { version: 6, createdAt: new Date().toISOString() },
-    role: "spectator",
-    mode: "athlete", // athlete | team
+    meta: { version: 7, createdAt: new Date().toISOString() },
+    role: "athlete",
     ui: { tab: "competition", compId },
     settings: {
-      hideLeaderboard: false,
       submissionsClosed: false,
-      finalOnlyLeaderboard: false,
-      allowProvisionalForStaff: true,
+      leaderboardPublished: false, // athletes can only see leaderboard when true (and judging complete)
     },
     directory: {
       events: [
@@ -384,7 +364,6 @@ const S = {
     boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
   },
   row: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
-  col: { display: "flex", flexDirection: "column", gap: 10 },
   btn: {
     cursor: "pointer",
     userSelect: "none",
@@ -429,6 +408,15 @@ const S = {
   },
   label: { fontSize: 12, opacity: 0.85, fontWeight: 800, marginBottom: 6 },
   muted: { opacity: 0.78, fontSize: 12, lineHeight: 1.35 },
+  tag: {
+    display: "inline-flex",
+    padding: "2px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.06)",
+    fontSize: 12,
+    opacity: 0.95,
+  },
   pill: {
     display: "inline-flex",
     alignItems: "center",
@@ -439,15 +427,6 @@ const S = {
     background: "rgba(0,0,0,0.18)",
     fontSize: 12,
   },
-  tag: {
-    display: "inline-flex",
-    padding: "2px 8px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.06)",
-    fontSize: 12,
-    opacity: 0.95,
-  },
   divider: { height: 1, background: "rgba(255,255,255,0.12)", margin: "10px 0" },
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
   th: {
@@ -456,6 +435,7 @@ const S = {
     opacity: 0.8,
     padding: "8px 10px",
     borderBottom: "1px solid rgba(255,255,255,0.12)",
+    verticalAlign: "bottom",
   },
   td: { padding: "10px", borderBottom: "1px solid rgba(255,255,255,0.08)", verticalAlign: "top", fontSize: 13 },
   modalBackdrop: {
@@ -469,7 +449,7 @@ const S = {
     padding: 14,
   },
   modal: {
-    width: "min(980px, 96vw)",
+    width: "min(860px, 96vw)",
     maxHeight: "90vh",
     overflow: "auto",
     borderRadius: 14,
@@ -554,13 +534,10 @@ export default function App() {
   useEffect(() => saveData(data), [data]);
 
   const role = data.role;
-  const mode = data.mode;
-  const isStaff = role === "judge" || role === "head_judge" || role === "organiser";
   const isOrganiser = role === "organiser";
   const isJudge = role === "judge";
   const isHeadJudge = role === "head_judge";
-  const isAthleteSide = role === "athlete" || role === "team_manager";
-  const now = Date.now();
+  const nowMs = Date.now();
 
   const currentComp = useMemo(() => {
     const found = data.competitions.find((c) => c.id === data.ui.compId);
@@ -573,19 +550,6 @@ export default function App() {
     showToast._t = window.setTimeout(() => setToast(null), 2600);
   }
 
-  function addAudit(message) {
-    updateComp(currentComp.id, (c) => {
-      c.audit = c.audit || [];
-      c.audit.unshift({
-        id: uid("audit"),
-        at: new Date().toISOString(),
-        whoRole: role,
-        message,
-      });
-      return c;
-    });
-  }
-
   function resetDemo() {
     window.localStorage.removeItem(LS_KEY);
     setData(DEFAULT_DATA);
@@ -593,10 +557,6 @@ export default function App() {
 
   function setRole(r) {
     setData((d) => ({ ...d, role: r }));
-  }
-
-  function toggleMode() {
-    setData((d) => ({ ...d, mode: d.mode === "athlete" ? "team" : "athlete" }));
   }
 
   function setTab(tab) {
@@ -623,6 +583,19 @@ export default function App() {
     });
   }
 
+  function addAudit(message) {
+    updateComp(currentComp.id, (c) => {
+      c.audit = c.audit || [];
+      c.audit.unshift({
+        id: uid("audit"),
+        at: new Date().toISOString(),
+        whoRole: role,
+        message,
+      });
+      return c;
+    });
+  }
+
   /* ----------------
      Import / Export
   ---------------- */
@@ -642,19 +615,16 @@ export default function App() {
   }
 
   /* ----------------
-     Participants
+     Participants & divisions
   ---------------- */
   const participantList = useMemo(() => {
     if (!currentComp) return [];
-    if (mode === "athlete") return (currentComp.athletes || []).map((a) => a.name);
-    return (currentComp.teams || []).map((t) => t.name);
-  }, [currentComp, mode]);
+    return (currentComp.athletes || []).map((a) => a.name);
+  }, [currentComp]);
 
   const participantMeta = useMemo(() => {
     const map = new Map();
-    if (!currentComp) return map;
-    (currentComp.athletes || []).forEach((a) => map.set(a.name, { type: "athlete", division: a.division }));
-    (currentComp.teams || []).forEach((t) => map.set(t.name, { type: "team", division: t.division, members: t.members || [] }));
+    (currentComp?.athletes || []).forEach((a) => map.set(a.name, { division: a.division || "" }));
     return map;
   }, [currentComp]);
 
@@ -663,11 +633,9 @@ export default function App() {
     if (!c) return [];
     const set = new Set();
     (c.divisions || []).forEach((d) => set.add(d));
-    for (const [, meta] of participantMeta.entries()) {
-      if (meta.division) set.add(meta.division);
-    }
+    (c.athletes || []).forEach((a) => a.division && set.add(a.division));
     return Array.from(set);
-  }, [currentComp, participantMeta]);
+  }, [currentComp]);
 
   function workoutForDivision(workout, division) {
     const scaled = workout?.scalingByDivision?.[division];
@@ -686,72 +654,55 @@ export default function App() {
   }
 
   /* ----------------
-     Live windows
+     Scheduling helpers
   ---------------- */
-  function workoutIsLive(wBase) {
-    const open = wBase.liveWindow?.openAt ? new Date(wBase.liveWindow.openAt).getTime() : null;
-    const close = wBase.liveWindow?.closeAt ? new Date(wBase.liveWindow.closeAt).getTime() : null;
-    if (open && now < open) return false;
-    if (close && now > close) return false;
-    return true;
+  function isReleased(w) {
+    const t = w?.schedule?.releaseAt ? new Date(w.schedule.releaseAt).getTime() : null;
+    if (!t) return true;
+    return nowMs >= t;
   }
 
-  function workoutLiveLabel(wBase) {
-    const live = workoutIsLive(wBase);
-    const openAt = wBase.liveWindow?.openAt;
-    const closeAt = wBase.liveWindow?.closeAt;
-    if (live) return `LIVE (closes ${prettyDateTime(closeAt)})`;
-    if (openAt && now < new Date(openAt).getTime()) return `Opens ${prettyDateTime(openAt)}`;
-    if (closeAt && now > new Date(closeAt).getTime()) return `Closed ${prettyDateTime(closeAt)}`;
-    return "Not live";
+  function isClosed(w) {
+    const t = w?.schedule?.closeAt ? new Date(w.schedule.closeAt).getTime() : null;
+    if (!t) return false;
+    return nowMs >= t;
   }
 
-  const submissionsClosed = data.settings.submissionsClosed;
-  const leaderboardHidden = data.settings.hideLeaderboard;
-  const finalOnly = data.settings.finalOnlyLeaderboard;
-  const staffCanSeeProvisional = data.settings.allowProvisionalForStaff;
+  function scheduleLabel(w) {
+    const r = w?.schedule?.releaseAt;
+    const c = w?.schedule?.closeAt;
+    const relMs = r ? new Date(r).getTime() : null;
+    const closeMs = c ? new Date(c).getTime() : null;
+
+    if (relMs && nowMs < relMs) return `Releases ${prettyDateTime(r)}`;
+    if (closeMs && nowMs < closeMs) return `Open (closes ${prettyDateTime(c)})`;
+    if (closeMs && nowMs >= closeMs) return `Closed ${prettyDateTime(c)}`;
+    return "Scheduled";
+  }
 
   /* ================================
-     EFFECTIVE SCORE RESOLUTION
-     (Final > awaiting adjustment > submission)
+     Effective score (FINAL > pending adj > submission)
+     BUT: leaderboard uses FINAL only
   ================================ */
-  function getEffectiveScore(workoutId, participant) {
-    const c = currentComp;
-    if (!c) return { value: null, status: "none", note: "" };
+  function getFinal(workoutId, participant) {
+    return currentComp?.finalScores?.[workoutId]?.[participant] || null;
+  }
 
-    const final = c.finalScores?.[workoutId]?.[participant];
-    if (final && final.value != null && String(final.value) !== "") {
-      return { value: final.value, status: "final", note: final.note || "" };
-    }
+  function getSubmission(workoutId, participant) {
+    return currentComp?.submissions?.[workoutId]?.[participant] || null;
+  }
 
-    const pending = (c.adjustments || []).find(
+  function getPendingAdjustment(workoutId, participant) {
+    return (currentComp?.adjustments || []).find(
       (a) => a.workoutId === workoutId && a.participant === participant && a.status === "awaiting_head_judge"
     );
-    if (pending && pending.adjustedValue != null && String(pending.adjustedValue) !== "") {
-      return { value: pending.adjustedValue, status: "awaiting", note: pending.note || "" };
-    }
-
-    const sub = c.submissions?.[workoutId]?.[participant];
-    if (sub && sub.value != null && String(sub.value) !== "") {
-      return { value: sub.value, status: sub.status || "submitted", note: sub.judgeNote || "" };
-    }
-
-    return { value: null, status: "none", note: "" };
-  }
-
-  function canSeeProvisional() {
-    // if final-only mode: staff may still see provisional if toggle enabled
-    if (!finalOnly) return true;
-    if (!isStaff) return false;
-    return !!staffCanSeeProvisional;
   }
 
   /* ================================
-     POINTS-BASED LEADERBOARD
-     - ranks per workout
-     - points = N - rank + 1
-     - missing score => 0 points
-     - supports Overall + per division
+     Rank Leaderboard (1 best)
+     - per workout: best = rank 1
+     - overall: sum of ranks for CLOSED workouts only (completion reached)
+     - workouts NOT CLOSED: blurred values for athletes, excluded from totals
   ================================ */
   function isAscForWorkout(w) {
     if (w.sort === "asc") return true;
@@ -767,34 +718,33 @@ export default function App() {
     return toNumberOrNull(s);
   }
 
-  function computePointsLeaderboard(scopeParticipants) {
+  function computeRanksTable() {
     const c = currentComp;
-    if (!c) return [];
+    if (!c) return { rows: [], closedWorkoutIds: new Set(), perWorkout: {} };
 
-    const N = scopeParticipants.length;
     const workouts = c.workouts || [];
+    const participants = (c.athletes || []).map((a) => ({ name: a.name, division: a.division || "" }));
+    const N = participants.length;
 
-    // Precompute per workout ranking + points
-    const perWorkout = {};
+    const closedWorkoutIds = new Set(workouts.filter((w) => isClosed(w)).map((w) => w.id));
+    const perWorkout = {}; // workoutId -> { rankMap, valueMap }
+
     workouts.forEach((wBase) => {
-      const rows = scopeParticipants.map((p) => {
-        const eff = getEffectiveScore(wBase.id, p.name);
-        // apply visibility rule:
-        if (!canSeeProvisional() && eff.status !== "final") {
-          return { name: p.name, division: p.division, value: null, status: "hidden", sortable: null };
-        }
-        const sortable = scoreToSortable(wBase, eff.value);
-        return { name: p.name, division: p.division, value: eff.value, status: eff.status, sortable };
-      });
-
       const asc = isAscForWorkout(wBase);
-      const scored = rows.filter((r) => r.sortable != null);
-      scored.sort((a, b) => {
-        if (a.sortable === b.sortable) return 0;
-        return asc ? a.sortable - b.sortable : b.sortable - a.sortable;
+      const valueMap = new Map();
+      const scored = [];
+
+      participants.forEach((p) => {
+        const final = getFinal(wBase.id, p.name);
+        const val = final?.value ?? null;
+        valueMap.set(p.name, val);
+
+        const sortable = scoreToSortable(wBase, val);
+        if (sortable != null) scored.push({ name: p.name, sortable });
       });
 
-      // competition ranking (ties share rank)
+      scored.sort((a, b) => (asc ? a.sortable - b.sortable : b.sortable - a.sortable));
+
       const rankMap = new Map();
       let rank = 1;
       for (let i = 0; i < scored.length; i++) {
@@ -802,86 +752,178 @@ export default function App() {
         rankMap.set(scored[i].name, rank);
       }
 
-      const pointsMap = new Map();
-      rows.forEach((r) => {
-        const rnk = rankMap.get(r.name);
-        if (!rnk) pointsMap.set(r.name, 0);
-        else pointsMap.set(r.name, N - rnk + 1);
-      });
-
-      perWorkout[wBase.id] = { rankMap, pointsMap, rows };
+      perWorkout[wBase.id] = { rankMap, valueMap };
     });
 
-    // Build final table
-    const table = scopeParticipants.map((p) => {
-      const breakdown = (currentComp.workouts || []).map((w) => {
+    const rows = participants.map((p) => {
+      let totalRank = 0;
+      let counted = 0;
+      const breakdown = workouts.map((w) => {
         const wk = perWorkout[w.id];
-        const points = wk?.pointsMap?.get(p.name) ?? 0;
-        const rank = wk?.rankMap?.get(p.name) ?? null;
-        const row = (wk?.rows || []).find((r) => r.name === p.name) || {};
-        return { workoutId: w.id, workoutName: w.name, points, rank, value: row.value ?? null, status: row.status ?? "none" };
+        const rank = wk?.rankMap?.get(p.name) ?? null; // null if no final
+        const value = wk?.valueMap?.get(p.name) ?? null;
+        const closed = closedWorkoutIds.has(w.id);
+
+        // Penalty: if workout is CLOSED and missing final -> treat as worst rank (N + 1)
+        const effectiveRank = closed ? (rank ?? N + 1) : null;
+
+        if (closed && effectiveRank != null) {
+          totalRank += effectiveRank;
+          counted += 1;
+        }
+
+        return {
+          workoutId: w.id,
+          workoutName: w.name,
+          closed,
+          rank: rank,
+          effectiveRank,
+          value,
+        };
       });
-      const totalPoints = breakdown.reduce((sum, b) => sum + (b.points || 0), 0);
-      return { name: p.name, division: p.division, totalPoints, breakdown };
+
+      return {
+        name: p.name,
+        division: p.division,
+        totalRank,
+        countedWorkouts: counted,
+        breakdown,
+      };
     });
 
-    // Sort by total points desc, then name
-    table.sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+    // Sort overall: lowest totalRank wins (only meaningful if countedWorkouts > 0)
+    rows.sort((a, b) => {
+      // if no workouts counted, keep alphabetical
+      if (a.countedWorkouts === 0 && b.countedWorkouts === 0) return a.name.localeCompare(b.name);
+      if (a.countedWorkouts === 0) return 1;
+      if (b.countedWorkouts === 0) return -1;
+
+      if (a.totalRank !== b.totalRank) return a.totalRank - b.totalRank;
       return a.name.localeCompare(b.name);
     });
 
-    return table;
+    return { rows, closedWorkoutIds, perWorkout };
+  }
+
+  const ranksTable = useMemo(() => computeRanksTable(), [currentComp, nowMs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ================================
+     Publish gating: "judging completed"
+     Interpretation implemented:
+     - No pending adjustments anywhere
+     - Every CLOSED workout has FINAL scores for every participant
+  ================================ */
+  const publishStatus = useMemo(() => {
+    const c = currentComp;
+    if (!c) return { canPublish: false, reasons: ["No competition loaded"] };
+
+    const workouts = c.workouts || [];
+    const participants = (c.athletes || []).map((a) => a.name);
+    const closedWorkouts = workouts.filter((w) => isClosed(w));
+
+    const pending = (c.adjustments || []).filter((a) => a.status === "awaiting_head_judge");
+    const reasons = [];
+
+    if (pending.length > 0) reasons.push(`Pending adjustments: ${pending.length}`);
+
+    // For each closed workout, ensure finals exist for all participants
+    let missingFinals = 0;
+    for (const w of closedWorkouts) {
+      for (const p of participants) {
+        const f = c.finalScores?.[w.id]?.[p];
+        if (!f || f.value == null || String(f.value).trim() === "") missingFinals += 1;
+      }
+    }
+    if (closedWorkouts.length === 0) reasons.push("No workouts have reached completion/close date yet");
+    if (missingFinals > 0) reasons.push(`Missing final scores on closed workouts: ${missingFinals}`);
+
+    return { canPublish: reasons.length === 0, reasons };
+  }, [currentComp, nowMs]);
+
+  function setLeaderboardPublished(next) {
+    if (next === true) {
+      if (!publishStatus.canPublish) {
+        showToast("warn", `Cannot publish yet: ${publishStatus.reasons[0] || "Judging incomplete"}`);
+        return;
+      }
+      toggleSetting("leaderboardPublished");
+      addAudit("Leaderboard published");
+      showToast("ok", "Leaderboard published.");
+    } else {
+      toggleSetting("leaderboardPublished");
+      addAudit("Leaderboard unpublished");
+      showToast("ok", "Leaderboard unpublished.");
+    }
   }
 
   /* ================================
-     Athlete-side selections
+     Athlete: workout dropdown + submit modal
   ================================ */
-  const [athleteView, setAthleteView] = useState("workouts"); // workouts | submit | leaderboard | my_submissions
-  const [mySelection, setMySelection] = useState(() => participantList[0] || "");
-  const [lbDivision, setLbDivision] = useState("Overall"); // Overall or division name
+  const [athleteName, setAthleteName] = useState(() => participantList[0] || "");
+  const [workoutPick, setWorkoutPick] = useState(() => currentComp?.workouts?.[0]?.id || "");
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [submitDraft, setSubmitDraft] = useState({ value: "", videoUrl: "", notes: "" });
+  const [athleteTab, setAthleteTab] = useState("workout"); // workout | leaderboard | my
 
   useEffect(() => {
-    if (!participantList.includes(mySelection)) setMySelection(participantList[0] || "");
+    if (!participantList.includes(athleteName)) setAthleteName(participantList[0] || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, data.ui.compId, participantList.join("\n")]);
+  }, [participantList.join("\n")]);
+
+  const athleteDivision = participantMeta.get(athleteName)?.division || "";
+
+  const athleteVisibleWorkouts = useMemo(() => {
+    const ws = currentComp?.workouts || [];
+    // Athletes only see released workouts
+    return ws.filter((w) => isReleased(w));
+  }, [currentComp, nowMs]);
 
   useEffect(() => {
-    const opts = ["Overall", ...compDivisions];
-    if (!opts.includes(lbDivision)) setLbDivision("Overall");
-  }, [compDivisions, lbDivision]);
+    const ids = athleteVisibleWorkouts.map((w) => w.id);
+    if (!ids.includes(workoutPick)) setWorkoutPick(ids[0] || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteVisibleWorkouts.map((w) => w.id).join("|")]);
 
-  /* ================================
-     SUBMIT DRAFT
-  ================================ */
-  const [submitDraft, setSubmitDraft] = useState({ workoutId: "", value: "", videoUrl: "", notes: "" });
+  const selectedWorkoutBase = useMemo(() => {
+    return (currentComp?.workouts || []).find((w) => w.id === workoutPick) || null;
+  }, [currentComp, workoutPick]);
 
-  useEffect(() => {
-    const firstWorkout = currentComp?.workouts?.[0]?.id || "";
-    setSubmitDraft((d) => ({ ...d, workoutId: firstWorkout }));
-  }, [data.ui.compId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selectedWorkout = useMemo(() => {
+    if (!selectedWorkoutBase) return null;
+    return workoutForDivision(selectedWorkoutBase, athleteDivision);
+  }, [selectedWorkoutBase, athleteDivision]);
 
-  function submitOnlineScore() {
-    const comp = currentComp;
-    if (!comp) return;
+  function canAthleteSubmitForWorkout(wBase) {
+    if (!wBase) return { ok: false, reason: "No workout selected" };
+    if (data.settings.submissionsClosed) return { ok: false, reason: "Submissions are closed" };
+    if (!isReleased(wBase)) return { ok: false, reason: "Workout not released yet" };
+    const closeAt = wBase?.schedule?.closeAt ? new Date(wBase.schedule.closeAt).getTime() : null;
+    if (closeAt && nowMs > closeAt) return { ok: false, reason: "Workout has closed" };
+    return { ok: true, reason: "" };
+  }
 
-    const participant = mySelection;
-    if (!participant) return showToast("warn", "Select an athlete/team first.");
-    const w = (comp.workouts || []).find((x) => x.id === submitDraft.workoutId);
-    if (!w) return showToast("warn", "Select a workout.");
+  function openSubmitModal() {
+    const gate = canAthleteSubmitForWorkout(selectedWorkoutBase);
+    if (!gate.ok) return showToast("warn", gate.reason);
+    setSubmitDraft({ value: "", videoUrl: "", notes: "" });
+    setShowSubmitModal(true);
+  }
 
-    if (submissionsClosed) return showToast("warn", "Submissions are closed by organiser.");
-    if (!workoutIsLive(w)) return showToast("warn", "This workout is not currently live.");
+  function submitScore() {
+    const wBase = selectedWorkoutBase;
+    if (!wBase) return;
+    const gate = canAthleteSubmitForWorkout(wBase);
+    if (!gate.ok) return showToast("warn", gate.reason);
 
     const value = String(submitDraft.value || "").trim();
     if (!value) return showToast("warn", "Enter a score value.");
 
-    const division = participantMeta.get(participant)?.division || "";
+    const division = athleteDivision;
 
-    updateComp(comp.id, (c) => {
+    updateComp(currentComp.id, (c) => {
       c.submissions = c.submissions || {};
-      c.submissions[w.id] = c.submissions[w.id] || {};
-      c.submissions[w.id][participant] = {
+      c.submissions[wBase.id] = c.submissions[wBase.id] || {};
+      c.submissions[wBase.id][athleteName] = {
         value,
         videoUrl: String(submitDraft.videoUrl || "").trim(),
         notes: String(submitDraft.notes || "").trim(),
@@ -893,20 +935,21 @@ export default function App() {
       return c;
     });
 
-    addAudit(`Submission: ${participant} -> ${w.name} = ${value}`);
+    addAudit(`Submission: ${athleteName} -> ${wBase.name} = ${value}`);
     showToast("ok", "Score submitted.");
-    setAthleteView("my_submissions");
+    setShowSubmitModal(false);
+    setAthleteTab("my");
   }
 
   /* ================================
-     JUDGE VIEW
+     Judge view (NO leaderboard option)
   ================================ */
-  const [judgeView, setJudgeView] = useState("review"); // review | adjusted_queue | leaderboard
   const [judgeName, setJudgeName] = useState(() => currentComp?.judgePool?.[0] || "Judge");
+  const [judgeView, setJudgeView] = useState("review"); // review | sent
+  const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted", division: "all" });
+  const [adjustDraft, setAdjustDraft] = useState({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
 
-  useEffect(() => {
-    setJudgeName(currentComp?.judgePool?.[0] || "Judge");
-  }, [data.ui.compId]);
+  useEffect(() => setJudgeName(currentComp?.judgePool?.[0] || "Judge"), [data.ui.compId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submissionsFlat = useMemo(() => {
     const c = currentComp;
@@ -934,8 +977,6 @@ export default function App() {
     return rows;
   }, [currentComp, participantMeta]);
 
-  const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted", division: "all" });
-
   const judgeFiltered = useMemo(() => {
     const q = normaliseStr(judgeFilter.q);
     return submissionsFlat.filter((r) => {
@@ -949,8 +990,6 @@ export default function App() {
       return true;
     });
   }, [submissionsFlat, judgeFilter]);
-
-  const [adjustDraft, setAdjustDraft] = useState({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
 
   function startAdjust(row) {
     setAdjustDraft({
@@ -979,7 +1018,6 @@ export default function App() {
         adjustedValue: value,
         note: String(adjustDraft.note || "").trim(),
         judgeName: judgeName || "Judge",
-        judgeRole: "judge",
         createdAt: new Date().toISOString(),
         status: "awaiting_head_judge",
         decidedAt: "",
@@ -987,7 +1025,7 @@ export default function App() {
         rejectReason: "",
       });
 
-      // mark submission as adjusted (provisional)
+      // mark submission as adjusted (proposed)
       comp.submissions = comp.submissions || {};
       comp.submissions[adjustDraft.workoutId] = comp.submissions[adjustDraft.workoutId] || {};
       const existing = comp.submissions[adjustDraft.workoutId][adjustDraft.participant];
@@ -1001,24 +1039,26 @@ export default function App() {
     addAudit(`Adjustment proposed: ${adjustDraft.participant} -> ${adjustDraft.workoutId} = ${value}`);
     showToast("ok", "Adjustment sent to Head Judge.");
     setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
-    setJudgeView("adjusted_queue");
+    setJudgeView("sent");
   }
 
+  const judgeSent = useMemo(() => {
+    return (currentComp?.adjustments || []).filter((a) => a.judgeName === judgeName);
+  }, [currentComp, judgeName]);
+
   /* ================================
-     HEAD JUDGE VIEW
+     Head Judge view (NO leaderboard option)
+     - approve/reject adjustments
+     - finalise submissions (accept as final, or override final)
   ================================ */
-  const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | leaderboard | audit
   const [headJudgeName, setHeadJudgeName] = useState(() => currentComp?.headJudgePool?.[0] || "Head Judge");
+  const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | finalise | audit
   const [rejectNote, setRejectNote] = useState("");
 
-  useEffect(() => {
-    setHeadJudgeName(currentComp?.headJudgePool?.[0] || "Head Judge");
-  }, [data.ui.compId]);
+  useEffect(() => setHeadJudgeName(currentComp?.headJudgePool?.[0] || "Head Judge"), [data.ui.compId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const awaitingAdjustments = useMemo(() => {
-    const c = currentComp;
-    if (!c) return [];
-    return (c.adjustments || []).filter((a) => a.status === "awaiting_head_judge");
+    return (currentComp?.adjustments || []).filter((a) => a.status === "awaiting_head_judge");
   }, [currentComp]);
 
   function confirmAdjustment(adjId) {
@@ -1030,12 +1070,13 @@ export default function App() {
     updateComp(c.id, (comp) => {
       const a = (comp.adjustments || []).find((x) => x.id === adjId);
       if (!a) return comp;
+
       a.status = "approved";
       a.decidedAt = new Date().toISOString();
       a.headJudgeName = headJudgeName || "Head Judge";
       a.rejectReason = "";
 
-      // write final score
+      // write final score (from adjustment)
       comp.finalScores = comp.finalScores || {};
       comp.finalScores[a.workoutId] = comp.finalScores[a.workoutId] || {};
       comp.finalScores[a.workoutId][a.participant] = {
@@ -1046,7 +1087,7 @@ export default function App() {
         note: a.note || "",
       };
 
-      // mark submission status final
+      // mark submission final
       comp.submissions = comp.submissions || {};
       comp.submissions[a.workoutId] = comp.submissions[a.workoutId] || {};
       if (comp.submissions[a.workoutId][a.participant]) {
@@ -1062,19 +1103,20 @@ export default function App() {
   function rejectAdjustment(adjId) {
     const c = currentComp;
     if (!c) return;
+    const reason = String(rejectNote || "").trim() || "Rejected";
     const adj = (c.adjustments || []).find((x) => x.id === adjId);
     if (!adj) return;
 
-    const reason = String(rejectNote || "").trim();
     updateComp(c.id, (comp) => {
       const a = (comp.adjustments || []).find((x) => x.id === adjId);
       if (!a) return comp;
+
       a.status = "rejected";
       a.decidedAt = new Date().toISOString();
       a.headJudgeName = headJudgeName || "Head Judge";
-      a.rejectReason = reason || "Rejected";
+      a.rejectReason = reason;
 
-      // revert submission status back to submitted (still editable)
+      // revert submission status to submitted (still needs finalisation later)
       comp.submissions = comp.submissions || {};
       comp.submissions[a.workoutId] = comp.submissions[a.workoutId] || {};
       if (comp.submissions[a.workoutId][a.participant]) {
@@ -1089,98 +1131,114 @@ export default function App() {
     setRejectNote("");
   }
 
-  /* ================================
-     LEADERBOARD (memo)
-  ================================ */
-  const scopeParticipants = useMemo(() => {
+  const [finaliseDraft, setFinaliseDraft] = useState({ workoutId: "", participant: "", value: "" });
+
+  const nonFinalSubmissions = useMemo(() => {
     const c = currentComp;
     if (!c) return [];
-    const all =
-      mode === "athlete"
-        ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division || "" }))
-        : (c.teams || []).map((t) => ({ name: t.name, division: t.division || "" }));
+    const rows = [];
+    for (const w of c.workouts || []) {
+      const per = c.submissions?.[w.id] || {};
+      for (const [participant, s] of Object.entries(per)) {
+        const f = c.finalScores?.[w.id]?.[participant];
+        if (f && f.value != null && String(f.value).trim() !== "") continue;
+        // if there's a pending adjustment, head judge should handle that in confirm view
+        const pending = getPendingAdjustment(w.id, participant);
+        if (pending) continue;
 
-    if (lbDivision === "Overall") return all;
-    return all.filter((p) => p.division === lbDivision);
-  }, [currentComp, mode, lbDivision]);
+        rows.push({
+          workoutId: w.id,
+          workoutName: w.name,
+          participant,
+          division: s.division || participantMeta.get(participant)?.division || "",
+          submittedValue: s.value,
+          submittedAt: s.submittedAt,
+          status: s.status || "submitted",
+          judgeNote: s.judgeNote || "",
+        });
+      }
+    }
+    rows.sort((a, b) => String(b.submittedAt || "").localeCompare(String(a.submittedAt || "")));
+    return rows;
+  }, [currentComp, participantMeta]);
 
-  const pointsLeaderboard = useMemo(() => {
-    return computePointsLeaderboard(scopeParticipants);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentComp, mode, lbDivision, isStaff, staffCanSeeProvisional, finalOnly]);
+  function acceptAsFinal(row) {
+    const c = currentComp;
+    if (!c) return;
+    updateComp(c.id, (comp) => {
+      comp.finalScores = comp.finalScores || {};
+      comp.finalScores[row.workoutId] = comp.finalScores[row.workoutId] || {};
+      comp.finalScores[row.workoutId][row.participant] = {
+        value: row.submittedValue,
+        finalAt: new Date().toISOString(),
+        source: "submission",
+        decidedBy: headJudgeName || "Head Judge",
+        note: "",
+      };
+      // mark submission final
+      comp.submissions = comp.submissions || {};
+      comp.submissions[row.workoutId] = comp.submissions[row.workoutId] || {};
+      if (comp.submissions[row.workoutId][row.participant]) {
+        comp.submissions[row.workoutId][row.participant].status = "final";
+      }
+      return comp;
+    });
+
+    addAudit(`FINAL accepted: ${row.participant} -> ${row.workoutId} = ${row.submittedValue}`);
+    showToast("ok", "Accepted as final.");
+  }
+
+  function startOverrideFinal(row) {
+    setFinaliseDraft({ workoutId: row.workoutId, participant: row.participant, value: String(row.submittedValue ?? "") });
+  }
+
+  function saveOverrideFinal() {
+    const c = currentComp;
+    if (!c) return;
+    const value = String(finaliseDraft.value || "").trim();
+    if (!finaliseDraft.workoutId || !finaliseDraft.participant) return;
+    if (!value) return showToast("warn", "Final value required.");
+
+    updateComp(c.id, (comp) => {
+      comp.finalScores = comp.finalScores || {};
+      comp.finalScores[finaliseDraft.workoutId] = comp.finalScores[finaliseDraft.workoutId] || {};
+      comp.finalScores[finaliseDraft.workoutId][finaliseDraft.participant] = {
+        value,
+        finalAt: new Date().toISOString(),
+        source: "override",
+        decidedBy: headJudgeName || "Head Judge",
+        note: "Head Judge override",
+      };
+      comp.submissions = comp.submissions || {};
+      comp.submissions[finaliseDraft.workoutId] = comp.submissions[finaliseDraft.workoutId] || {};
+      if (comp.submissions[finaliseDraft.workoutId][finaliseDraft.participant]) {
+        comp.submissions[finaliseDraft.workoutId][finaliseDraft.participant].status = "final";
+      }
+      return comp;
+    });
+
+    addAudit(`FINAL override: ${finaliseDraft.participant} -> ${finaliseDraft.workoutId} = ${value}`);
+    showToast("ok", "Final override saved.");
+    setFinaliseDraft({ workoutId: "", participant: "", value: "" });
+  }
 
   /* ================================
-     ORGANISER: workout editor + controls
-  ================================ */
-  const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | controls | audit
-  const [workoutEditor, setWorkoutEditor] = useState(null); // { mode, draft }
-
-  function openNewWorkout() {
-    setWorkoutEditor({
-      mode: "new",
-      draft: {
-        id: uid("w"),
-        name: "New Workout",
-        divisionNotes: "All divisions",
-        scoreType: "reps",
-        sort: "desc",
-        unit: "reps",
-        cap: "10:00",
-        tiebreak: "",
-        equipment: [],
-        standards: [],
-        description: "",
-        media: { demoVideoUrl: "", scorecardUrl: "" },
-        liveWindow: defaultWindow(1, 72),
-        scalingByDivision: {},
-      },
-    });
-  }
-
-  function openEditWorkout(w) {
-    setWorkoutEditor({ mode: "edit", draft: JSON.parse(JSON.stringify(w)) });
-  }
-
-  function saveWorkout(draftWorkout) {
-    if (!draftWorkout.name?.trim()) return showToast("warn", "Workout name is required.");
-
-    updateComp(currentComp.id, (c) => {
-      c.workouts = c.workouts || [];
-      const idx = c.workouts.findIndex((w) => w.id === draftWorkout.id);
-      if (idx >= 0) c.workouts[idx] = draftWorkout;
-      else c.workouts.unshift(draftWorkout);
-      return c;
-    });
-
-    addAudit(`${workoutEditor?.mode === "edit" ? "Edited" : "Created"} workout: ${draftWorkout.name}`);
-    showToast("ok", "Workout saved.");
-    setWorkoutEditor(null);
-  }
-
-  function deleteWorkout(workoutId) {
-    updateComp(currentComp.id, (c) => {
-      c.workouts = (c.workouts || []).filter((w) => w.id !== workoutId);
-      if (c.submissions) delete c.submissions[workoutId];
-      if (c.finalScores) delete c.finalScores[workoutId];
-      c.adjustments = (c.adjustments || []).filter((a) => a.workoutId !== workoutId);
-      return c;
-    });
-    addAudit(`Deleted workout: ${workoutId}`);
-    showToast("ok", "Workout deleted.");
-  }
-
-  /* ================================
-     HEADER / TABS
+     Organiser: tabs, quick controls, scheduling, publish
   ================================ */
   const tab = data.ui.tab;
 
+  const canSeeDirectory = isOrganiser;
+  const canSeeAdmin = isOrganiser;
+
+  /* ================================
+     Header / Tabs
+  ================================ */
   const Header = () => (
     <div style={S.headerRow}>
       <div>
-        <div style={S.title}>Throwdown Hub — Demo (Points Leaderboard)</div>
+        <div style={S.title}>Throwdown Hub — Demo (Ranks Leaderboard)</div>
         <div style={S.subTitle}>
-          Points per workout (rank-based) → aggregate total points. Includes judge → head judge finalisation workflow, plus
-          division scaling & organiser controls.
+          Athlete workout dropdown + submit popup. Judge adjusts. Head Judge finalises. Organiser schedules release/close and publishes leaderboard.
         </div>
       </div>
 
@@ -1191,19 +1249,12 @@ export default function App() {
         </div>
 
         <div style={S.pill}>
-          <strong>Mode</strong>
-          <Button onClick={toggleMode} variant="default" type="button">
-            {mode === "athlete" ? "Athletes" : "Teams"}
-          </Button>
-        </div>
-
-        <div style={S.pill}>
           <strong>Competition</strong>
           <Select
             value={data.ui.compId}
             onChange={setCompId}
             options={(data.competitions || []).map((c) => ({ value: c.id, label: c.name }))}
-            style={{ width: 260 }}
+            style={{ width: 280 }}
           />
         </div>
       </div>
@@ -1215,12 +1266,18 @@ export default function App() {
       <Button variant={tab === "competition" ? "primary" : "default"} onClick={() => setTab("competition")} type="button">
         Competition
       </Button>
-      <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")} type="button">
-        Directory (lite)
-      </Button>
-      <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")} type="button">
-        Settings / Admin
-      </Button>
+
+      {canSeeDirectory ? (
+        <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")} type="button">
+          Directory
+        </Button>
+      ) : null}
+
+      {canSeeAdmin ? (
+        <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")} type="button">
+          Settings / Admin
+        </Button>
+      ) : null}
     </div>
   );
 
@@ -1236,7 +1293,7 @@ export default function App() {
           background: toast.type === "ok" ? "rgba(70,170,255,0.25)" : "rgba(255,160,70,0.22)",
           border: "1px solid rgba(255,255,255,0.14)",
           boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-          maxWidth: 420,
+          maxWidth: 460,
           zIndex: 1000,
         }}
       >
@@ -1246,20 +1303,16 @@ export default function App() {
     ) : null;
 
   /* ================================
-     DIRECTORY (lite)
+     Directory (organiser only)
   ================================ */
   const DirectoryPanel = () => {
     const evt = data.directory.events?.[0];
     return (
       <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
         <div style={{ flex: "1 1 760px", ...S.card }}>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>Events Directory (lite)</div>
-          <div style={{ ...S.muted, marginTop: 6 }}>
-            Placeholder directory panel. You can reinsert your full calendar/list directory later.
-          </div>
-
+          <div style={{ fontSize: 18, fontWeight: 900 }}>Events Directory</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>Organiser-only directory view (placeholder).</div>
           <div style={S.divider} />
-
           {evt ? (
             <div>
               <div style={{ fontWeight: 900, fontSize: 15 }}>{evt.name}</div>
@@ -1286,13 +1339,11 @@ export default function App() {
         </div>
 
         <div style={{ flex: "0 0 360px", ...S.card }}>
-          <div style={{ fontWeight: 900 }}>Demo tips</div>
+          <div style={{ fontWeight: 900 }}>Organiser notes</div>
           <div style={{ ...S.muted, marginTop: 6 }}>
-            • Switch roles in the header to see role-based UX.
-            <br />• Submit scores as Athlete/Team Manager.
-            <br />• Propose adjustments as Judge.
-            <br />• Confirm finals as Head Judge.
-            <br />• Toggle visibility controls as Organiser.
+            This tab is organiser-only per your requirement.
+            <br />
+            Later: replace with your full directory/search/filters.
           </div>
         </div>
       </div>
@@ -1300,297 +1351,109 @@ export default function App() {
   };
 
   /* ================================
-     COMPETITION PANEL
+     Leaderboard Panel (rank-based, blurred future workouts)
   ================================ */
-  const CompetitionPanel = () => {
-    if (!currentComp) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
+  function LeaderboardPanel({ viewerRole }) {
+    const workouts = currentComp?.workouts || [];
+    const showToAthlete = viewerRole === "athlete";
 
-    return (
-      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
-        <div style={{ flex: "1 1 760px", ...S.card }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>{currentComp.name}</div>
-              <div style={{ ...S.muted, marginTop: 4 }}>
-                {prettyDate(currentComp.date)} • {currentComp.location}
-              </div>
-              <div style={{ ...S.muted, marginTop: 6 }}>{currentComp.description}</div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={S.pill}>
-                <strong>Leaderboard</strong>
-                <span style={{ opacity: 0.85 }}>{leaderboardHidden ? "Hidden" : "Visible"}</span>
-              </div>
-              <div style={S.pill}>
-                <strong>Submissions</strong>
-                <span style={{ opacity: 0.85 }}>{submissionsClosed ? "Closed" : "Open"}</span>
-              </div>
-              <div style={S.pill}>
-                <strong>Final-only</strong>
-                <span style={{ opacity: 0.85 }}>{finalOnly ? "On" : "Off"}</span>
-              </div>
-            </div>
-          </div>
-
-          <div style={S.divider} />
-
-          {role === "spectator" ? <SpectatorView /> : null}
-          {isAthleteSide ? <AthleteTeamView /> : null}
-          {isJudge ? <JudgeView /> : null}
-          {isHeadJudge ? <HeadJudgeView /> : null}
-          {isOrganiser ? <OrganiserView /> : null}
+    // Athletes only see when organiser has published
+    if (showToAthlete && !data.settings.leaderboardPublished) {
+      return (
+        <div style={{ ...S.card, padding: 12 }}>
+          <div style={{ fontWeight: 900 }}>Leaderboard not published</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>The organiser will publish the leaderboard once judging is complete.</div>
         </div>
+      );
+    }
 
-        <div style={{ flex: "0 0 360px", ...S.card }}>
-          <div style={{ fontWeight: 900 }}>Quick controls</div>
-          <div style={{ ...S.muted, marginTop: 6 }}>For demo: organiser can toggle these from Settings/Admin too.</div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
-            <Toggle
-              checked={data.settings.hideLeaderboard}
-              onChange={() => toggleSetting("hideLeaderboard")}
-              label="Hide leaderboard"
-              hint="If on, spectators/athletes won't see it."
-            />
-            <Toggle
-              checked={data.settings.submissionsClosed}
-              onChange={() => toggleSetting("submissionsClosed")}
-              label="Close submissions"
-              hint="Stops athletes/teams submitting new scores."
-            />
-            <Toggle
-              checked={data.settings.finalOnlyLeaderboard}
-              onChange={() => toggleSetting("finalOnlyLeaderboard")}
-              label="Final-only visibility"
-              hint="Non-staff only see FINAL scores."
-            />
-            <Toggle
-              checked={data.settings.allowProvisionalForStaff}
-              onChange={() => toggleSetting("allowProvisionalForStaff")}
-              label="Staff can view provisional"
-              hint="Allows staff to see submitted/awaiting scores in final-only mode."
-            />
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  /* ================================
-     ROLE: Spectator
-  ================================ */
-  function SpectatorView() {
-    return (
-      <div>
-        <div style={{ fontSize: 15, fontWeight: 900 }}>Spectator</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>
-          View workouts + leaderboard. Switch to Athlete/Team Manager to submit.
-        </div>
-
-        <div style={S.divider} />
-
-        <div style={{ ...S.row, marginBottom: 10 }}>
-          <Field label="Leaderboard scope" style={{ width: 220 }}>
-            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
-          </Field>
-        </div>
-
-        <WorkoutsList />
-        <div style={{ marginTop: 12 }}>
-          <LeaderboardPanel />
-        </div>
-      </div>
-    );
-  }
-
-  /* ================================
-     ROLE: Athlete / Team Manager
-  ================================ */
-  function AthleteTeamView() {
-    const myDivision = participantMeta.get(mySelection)?.division || "";
-    const myMembers = participantMeta.get(mySelection)?.members || [];
-
-    return (
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>
-              {role === "team_manager" ? "Team Manager" : "Athlete"} — {mode === "athlete" ? "Athletes" : "Teams"}
-            </div>
-            <div style={{ ...S.muted, marginTop: 4 }}>
-              Select {mode === "athlete" ? "athlete" : "team"}, view workouts (scaled by division), submit scores, and view your submissions.
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <Field label={mode === "athlete" ? "Athlete" : "Team"} style={{ width: 240 }}>
-              <Select value={mySelection} onChange={setMySelection} options={participantList.length ? participantList : ["—"]} />
-            </Field>
-            <div style={S.pill}>
-              <strong>Division</strong>
-              <span style={{ opacity: 0.9 }}>{myDivision || "—"}</span>
-            </div>
-          </div>
-        </div>
-
-        {mode === "team" && myMembers?.length ? (
-          <div style={{ marginTop: 10, ...S.muted }}>
-            Team members: <span style={{ opacity: 0.95 }}>{myMembers.join(", ")}</span>
-          </div>
-        ) : null}
-
-        <div style={S.divider} />
-
-        <div style={{ ...S.row, marginBottom: 10 }}>
-          <Button variant={athleteView === "workouts" ? "primary" : "default"} onClick={() => setAthleteView("workouts")} type="button">
-            Workouts
-          </Button>
-          <Button variant={athleteView === "submit" ? "primary" : "default"} onClick={() => setAthleteView("submit")} type="button">
-            Submit Score
-          </Button>
-          <Button
-            variant={athleteView === "my_submissions" ? "primary" : "default"}
-            onClick={() => setAthleteView("my_submissions")}
-            type="button"
-          >
-            My Submissions
-          </Button>
-          <Button
-            variant={athleteView === "leaderboard" ? "primary" : "default"}
-            onClick={() => setAthleteView("leaderboard")}
-            type="button"
-          >
-            Leaderboard
-          </Button>
-
-          <div style={{ flex: 1 }} />
-
-          <Field label="Leaderboard scope" style={{ width: 220 }}>
-            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
-          </Field>
-        </div>
-
-        {athleteView === "workouts" ? <WorkoutsList division={myDivision} /> : null}
-        {athleteView === "submit" ? (
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900, fontSize: 15 }}>Submit an online score</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>
-              Submissions must be within the workout live window. Value format depends on workout (e.g. time as mm:ss).
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
-              <Field label="Workout">
-                <Select
-                  value={submitDraft.workoutId}
-                  onChange={(v) => setSubmitDraft((d) => ({ ...d, workoutId: v }))}
-                  options={(currentComp.workouts || []).map((w) => ({ value: w.id, label: w.name }))}
-                />
-              </Field>
-
-              <Field label="Score value">
-                <input
-                  style={S.input}
-                  value={submitDraft.value}
-                  onChange={(e) => setSubmitDraft((d) => ({ ...d, value: e.target.value }))}
-                  placeholder="e.g. 08:44 (time) or 110 (kg) or 245 (reps)"
-                />
-              </Field>
-
-              <Field label="Video URL (optional)" style={{ gridColumn: "1 / -1" }}>
-                <input
-                  style={S.input}
-                  value={submitDraft.videoUrl}
-                  onChange={(e) => setSubmitDraft((d) => ({ ...d, videoUrl: e.target.value }))}
-                  placeholder="Paste a video link"
-                />
-              </Field>
-
-              <Field label="Notes (optional)" style={{ gridColumn: "1 / -1" }}>
-                <textarea
-                  style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                  value={submitDraft.notes}
-                  onChange={(e) => setSubmitDraft((d) => ({ ...d, notes: e.target.value }))}
-                  placeholder="Anything the judge should know..."
-                />
-              </Field>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <Button variant="primary" onClick={submitOnlineScore} type="button">
-                Submit
-              </Button>
-              <div style={{ ...S.muted, marginLeft: 6 }}>
-                {submissionsClosed ? "Submissions are closed." : "Submissions are open."}{" "}
-                {(() => {
-                  const w = (currentComp.workouts || []).find((x) => x.id === submitDraft.workoutId);
-                  if (!w) return null;
-                  return `• ${workoutLiveLabel(w)}`;
-                })()}
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {athleteView === "my_submissions" ? <MySubmissionsPanel participant={mySelection} /> : null}
-        {athleteView === "leaderboard" ? <LeaderboardPanel /> : null}
-      </div>
-    );
-  }
-
-  function MySubmissionsPanel({ participant }) {
-    const c = currentComp;
-    const rows = (c.workouts || []).map((w) => {
-      const sub = c.submissions?.[w.id]?.[participant];
-      const eff = getEffectiveScore(w.id, participant);
-      return {
-        workoutId: w.id,
-        workoutName: w.name,
-        submittedAt: sub?.submittedAt || "",
-        submittedValue: sub?.value ?? null,
-        status: sub?.status || "none",
-        effectiveValue: eff.value,
-        effectiveStatus: eff.status,
-        judgeNote: sub?.judgeNote || "",
-      };
-    });
+    // If no workouts closed, still show structure (but totals will be 0 / not meaningful)
+    const rows = ranksTable.rows;
 
     return (
       <div style={{ ...S.card, padding: 12 }}>
-        <div style={{ fontWeight: 900, fontSize: 15 }}>My Submissions</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Shows your submitted score, plus effective score (final `{'>'}` awaiting `{'>'}` submission).</div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Leaderboard (Ranks)</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>
+              Rank 1 = best score for that workout. Overall = sum of ranks for <strong>closed</strong> workouts only (lower total wins).
+              Workouts not yet closed are blurred and excluded from totals.
+            </div>
+          </div>
+
+          <div style={S.pill}>
+            <strong>Published</strong>
+            <span style={{ opacity: 0.9 }}>{data.settings.leaderboardPublished ? "Yes" : "No"}</span>
+          </div>
+        </div>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
           <table style={S.table}>
             <thead>
               <tr>
-                <th style={S.th}>Workout</th>
-                <th style={S.th}>Submitted</th>
-                <th style={S.th}>Submitted at</th>
-                <th style={S.th}>Effective</th>
-                <th style={S.th}>Status</th>
-                <th style={S.th}>Notes</th>
+                <th style={S.th}>Overall</th>
+                <th style={S.th}>Athlete</th>
+                <th style={S.th}>Division</th>
+                <th style={S.th}>
+                  Total rank
+                  <div style={S.muted}>Closed workouts only</div>
+                </th>
+                {workouts.map((w) => (
+                  <th key={w.id} style={S.th}>
+                    {w.name}
+                    <div style={S.muted}>{isClosed(w) ? "Closed (counted)" : "Not closed (excluded)"}</div>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.workoutId}>
-                  <td style={S.td}>{r.workoutName}</td>
-                  <td style={S.td}>{r.submittedValue ?? "—"}</td>
-                  <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
-                  <td style={S.td}>{r.effectiveValue ?? "—"}</td>
+              {rows.map((r, idx) => (
+                <tr key={r.name}>
                   <td style={S.td}>
-                    <span style={S.tag}>{r.effectiveStatus}</span>
+                    <span style={S.tag}>{idx + 1}</span>
                   </td>
                   <td style={S.td}>
-                    <div style={S.muted}>{r.judgeNote || "—"}</div>
+                    <div style={{ fontWeight: 900 }}>{r.name}</div>
                   </td>
+                  <td style={S.td}>{r.division || "—"}</td>
+                  <td style={S.td}>
+                    <span style={S.tag}>{r.countedWorkouts > 0 ? r.totalRank : "—"}</span>
+                    <div style={S.muted}>{r.countedWorkouts} counted</div>
+                  </td>
+
+                  {r.breakdown.map((b) => {
+                    const blur = !b.closed && viewerRole === "athlete";
+                    const displayRank = b.closed ? (b.effectiveRank ?? "—") : "—";
+                    const displayValue = b.closed
+                      ? b.value ?? "—"
+                      : viewerRole === "organiser"
+                      ? b.value ?? "—"
+                      : "•••";
+
+                    return (
+                      <td key={b.workoutId} style={S.td}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <span style={S.tag}>Rank: {displayRank}</span>
+                          <div
+                            style={{
+                              ...S.muted,
+                              filter: blur ? "blur(4px)" : "none",
+                              userSelect: blur ? "none" : "text",
+                            }}
+                          >
+                            {displayValue}
+                          </div>
+                        </div>
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
+
               {rows.length === 0 ? (
                 <tr>
-                  <td style={S.td} colSpan={6}>
-                    <div style={S.muted}>No workouts.</div>
+                  <td style={S.td} colSpan={4 + workouts.length}>
+                    <div style={S.muted}>No athletes loaded.</div>
                   </td>
                 </tr>
               ) : null}
@@ -1602,498 +1465,728 @@ export default function App() {
   }
 
   /* ================================
-     ROLE: Judge
+     Athlete Panel
   ================================ */
-  function JudgeView() {
-    const c = currentComp;
-
-    const myAdjustments = (c.adjustments || []).filter((a) => a.judgeName === judgeName);
+  function AthletePanel() {
+    const wBase = selectedWorkoutBase;
+    const w = selectedWorkout;
 
     return (
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Judge</div>
-            <div style={{ ...S.muted, marginTop: 4 }}>Review submissions and propose adjustments to Head Judge.</div>
-          </div>
-
-          <Field label="Judge name" style={{ width: 240 }}>
-            <Select value={judgeName} onChange={setJudgeName} options={currentComp?.judgePool?.length ? currentComp.judgePool : ["Judge"]} />
-          </Field>
-        </div>
-
-        <div style={S.divider} />
-
-        <div style={{ ...S.row, marginBottom: 10 }}>
-          <Button variant={judgeView === "review" ? "primary" : "default"} onClick={() => setJudgeView("review")} type="button">
-            Review Submissions
-          </Button>
-          <Button
-            variant={judgeView === "adjusted_queue" ? "primary" : "default"}
-            onClick={() => setJudgeView("adjusted_queue")}
-            type="button"
-          >
-            Adjustments Sent ({myAdjustments.length})
-          </Button>
-          <Button variant={judgeView === "leaderboard" ? "primary" : "default"} onClick={() => setJudgeView("leaderboard")} type="button">
-            Leaderboard
-          </Button>
-
-          <div style={{ flex: 1 }} />
-
-          <Field label="Leaderboard scope" style={{ width: 220 }}>
-            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
-          </Field>
-        </div>
-
-        {judgeView === "review" ? (
-          <div>
-            <div style={{ ...S.card, padding: 12 }}>
-              <div style={{ fontWeight: 900, fontSize: 15 }}>Filters</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
-                <Field label="Search">
-                  <input
-                    style={S.input}
-                    value={judgeFilter.q}
-                    onChange={(e) => setJudgeFilter((f) => ({ ...f, q: e.target.value }))}
-                    placeholder="Name, workout, notes..."
-                  />
-                </Field>
-                <Field label="Workout">
-                  <Select
-                    value={judgeFilter.workoutId}
-                    onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
-                    options={[
-                      { value: "all", label: "All" },
-                      ...(currentComp.workouts || []).map((w) => ({ value: w.id, label: w.name })),
-                    ]}
-                  />
-                </Field>
-                <Field label="Status">
-                  <Select
-                    value={judgeFilter.status}
-                    onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
-                    options={[
-                      { value: "all", label: "All" },
-                      { value: "submitted", label: "Submitted" },
-                      { value: "adjusted", label: "Adjusted (proposed)" },
-                      { value: "final", label: "Final" },
-                    ]}
-                  />
-                </Field>
-                <Field label="Division">
-                  <Select
-                    value={judgeFilter.division}
-                    onChange={(v) => setJudgeFilter((f) => ({ ...f, division: v }))}
-                    options={[{ value: "all", label: "All" }, ...compDivisions.map((d) => ({ value: d, label: d }))]}
-                  />
-                </Field>
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
+        <div style={{ flex: "1 1 760px", ...S.card }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>Athlete</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>
+                Select a workout from the dropdown. Submit score via popup. Workouts are hidden until release.
               </div>
             </div>
 
-            <div style={{ marginTop: 12, overflowX: "auto" }}>
-              <table style={S.table}>
-                <thead>
-                  <tr>
-                    <th style={S.th}>Submitted at</th>
-                    <th style={S.th}>Participant</th>
-                    <th style={S.th}>Division</th>
-                    <th style={S.th}>Workout</th>
-                    <th style={S.th}>Value</th>
-                    <th style={S.th}>Notes</th>
-                    <th style={S.th}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {judgeFiltered.map((r) => (
-                    <tr key={`${r.workoutId}_${r.participant}`}>
-                      <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
-                      <td style={S.td}>
-                        <div style={{ fontWeight: 900 }}>{r.participant}</div>
-                        {r.videoUrl ? <div style={S.muted}>Video: {r.videoUrl}</div> : null}
-                      </td>
-                      <td style={S.td}>{r.division || "—"}</td>
-                      <td style={S.td}>{r.workoutName}</td>
-                      <td style={S.td}>
-                        <span style={S.tag}>{r.value ?? "—"}</span>
-                        <div style={{ ...S.muted, marginTop: 6 }}>{r.status}</div>
-                      </td>
-                      <td style={S.td}>
-                        <div style={S.muted}>{r.notes || "—"}</div>
-                        {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: {r.judgeNote}</div> : null}
-                      </td>
-                      <td style={S.td}>
-                        <Button variant="primary" onClick={() => startAdjust(r)} type="button">
-                          Propose adjustment
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                  {judgeFiltered.length === 0 ? (
-                    <tr>
-                      <td style={S.td} colSpan={7}>
-                        <div style={S.muted}>No submissions match your filters.</div>
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-
-            {adjustDraft.workoutId ? (
-              <div style={{ ...S.card, padding: 12, marginTop: 12 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Propose adjustment</div>
-                <div style={{ ...S.muted, marginTop: 6 }}>
-                  Sends to Head Judge for approval. Until approved, leaderboard shows “awaiting” to staff (depending on settings).
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
-                  <Field label="Participant">
-                    <input style={S.input} value={adjustDraft.participant} readOnly />
-                  </Field>
-                  <Field label="Workout">
-                    <input
-                      style={S.input}
-                      value={(currentComp.workouts || []).find((w) => w.id === adjustDraft.workoutId)?.name || adjustDraft.workoutId}
-                      readOnly
-                    />
-                  </Field>
-                  <Field label="Adjusted value" style={{ gridColumn: "1 / -1" }}>
-                    <input
-                      style={S.input}
-                      value={adjustDraft.adjustedValue}
-                      onChange={(e) => setAdjustDraft((d) => ({ ...d, adjustedValue: e.target.value }))}
-                      placeholder="e.g. 09:12 or 105"
-                    />
-                  </Field>
-                  <Field label="Reason / note (optional)" style={{ gridColumn: "1 / -1" }}>
-                    <textarea
-                      style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                      value={adjustDraft.note}
-                      onChange={(e) => setAdjustDraft((d) => ({ ...d, note: e.target.value }))}
-                      placeholder="Explain the adjustment (no-reps, standards, missing rep, etc.)"
-                    />
-                  </Field>
-                </div>
-
-                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-                  <Button variant="primary" onClick={saveAdjustment} type="button">
-                    Send to Head Judge
-                  </Button>
-                  <Button
-                    variant="default"
-                    onClick={() => setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" })}
-                    type="button"
-                  >
-                    Cancel
-                  </Button>
-                </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <Field label="Athlete" style={{ width: 240 }}>
+                <Select value={athleteName} onChange={setAthleteName} options={participantList.length ? participantList : ["—"]} />
+              </Field>
+              <div style={S.pill}>
+                <strong>Division</strong>
+                <span style={{ opacity: 0.9 }}>{athleteDivision || "—"}</span>
               </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {judgeView === "adjusted_queue" ? (
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900, fontSize: 15 }}>Adjustments sent</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Track the adjustments you’ve proposed and their status.</div>
-
-            <div style={{ overflowX: "auto", marginTop: 10 }}>
-              <table style={S.table}>
-                <thead>
-                  <tr>
-                    <th style={S.th}>Created</th>
-                    <th style={S.th}>Participant</th>
-                    <th style={S.th}>Workout</th>
-                    <th style={S.th}>Adjusted value</th>
-                    <th style={S.th}>Status</th>
-                    <th style={S.th}>Note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {myAdjustments.map((a) => (
-                    <tr key={a.id}>
-                      <td style={S.td}>{prettyDateTime(a.createdAt)}</td>
-                      <td style={S.td}>{a.participant}</td>
-                      <td style={S.td}>{(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}</td>
-                      <td style={S.td}>
-                        <span style={S.tag}>{a.adjustedValue}</span>
-                      </td>
-                      <td style={S.td}>
-                        <span style={S.tag}>{a.status}</span>
-                      </td>
-                      <td style={S.td}>
-                        <div style={S.muted}>{a.note || "—"}</div>
-                        {a.status === "rejected" ? (
-                          <div style={{ ...S.muted, marginTop: 6 }}>Rejected: {a.rejectReason || "—"}</div>
-                        ) : null}
-                      </td>
-                    </tr>
-                  ))}
-                  {myAdjustments.length === 0 ? (
-                    <tr>
-                      <td style={S.td} colSpan={6}>
-                        <div style={S.muted}>No adjustments yet.</div>
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
             </div>
           </div>
-        ) : null}
 
-        {judgeView === "leaderboard" ? <LeaderboardPanel /> : null}
-      </div>
-    );
-  }
+          <div style={S.divider} />
 
-  /* ================================
-     ROLE: Head Judge
-  ================================ */
-  function HeadJudgeView() {
-    return (
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Head Judge</div>
-            <div style={{ ...S.muted, marginTop: 4 }}>Approve/reject judge adjustments to write FINAL scores.</div>
+          <div style={{ ...S.row, marginBottom: 10 }}>
+            <Button variant={athleteTab === "workout" ? "primary" : "default"} onClick={() => setAthleteTab("workout")} type="button">
+              Workout
+            </Button>
+            <Button variant={athleteTab === "my" ? "primary" : "default"} onClick={() => setAthleteTab("my")} type="button">
+              My Submissions
+            </Button>
+            <Button
+              variant={athleteTab === "leaderboard" ? "primary" : "default"}
+              onClick={() => setAthleteTab("leaderboard")}
+              type="button"
+            >
+              Leaderboard
+            </Button>
           </div>
 
-          <Field label="Head Judge name" style={{ width: 240 }}>
-            <Select
-              value={headJudgeName}
-              onChange={setHeadJudgeName}
-              options={currentComp?.headJudgePool?.length ? currentComp.headJudgePool : ["Head Judge"]}
-            />
-          </Field>
-        </div>
+          {athleteTab === "workout" ? (
+            <div>
+              <Field label="Workout">
+                <Select
+                  value={workoutPick}
+                  onChange={setWorkoutPick}
+                  options={
+                    athleteVisibleWorkouts.length
+                      ? athleteVisibleWorkouts.map((x) => ({ value: x.id, label: `${x.name} — ${scheduleLabel(x)}` }))
+                      : [{ value: "", label: "No workouts released yet" }]
+                  }
+                />
+              </Field>
 
-        <div style={S.divider} />
+              <div style={S.divider} />
 
-        <div style={{ ...S.row, marginBottom: 10 }}>
-          <Button variant={headJudgeView === "confirm" ? "primary" : "default"} onClick={() => setHeadJudgeView("confirm")} type="button">
-            Confirm Adjustments ({awaitingAdjustments.length})
-          </Button>
-          <Button
-            variant={headJudgeView === "leaderboard" ? "primary" : "default"}
-            onClick={() => setHeadJudgeView("leaderboard")}
-            type="button"
-          >
-            Leaderboard
-          </Button>
-          <Button variant={headJudgeView === "audit" ? "primary" : "default"} onClick={() => setHeadJudgeView("audit")} type="button">
-            Audit
-          </Button>
-
-          <div style={{ flex: 1 }} />
-
-          <Field label="Leaderboard scope" style={{ width: 220 }}>
-            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
-          </Field>
-        </div>
-
-        {headJudgeView === "confirm" ? (
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900, fontSize: 15 }}>Awaiting confirmation</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Approve to set final score. Reject to return to submitted state with a note.</div>
-
-            <Field label="Reject note (optional)" style={{ marginTop: 10 }}>
-              <input style={S.input} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="Reason for rejection..." />
-            </Field>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
-              {awaitingAdjustments.map((a) => (
-                <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              {!wBase ? (
+                <div style={S.muted}>No workout selected.</div>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                     <div>
-                      <div style={{ fontWeight: 950 }}>
-                        {a.participant} • {(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}
-                      </div>
+                      <div style={{ fontWeight: 900, fontSize: 16 }}>{w?.name || wBase.name}</div>
                       <div style={{ ...S.muted, marginTop: 4 }}>
-                        Proposed by {a.judgeName} at {prettyDateTime(a.createdAt)}
+                        {w?.scoreType || wBase.scoreType} • {w?.unit || wBase.unit || "—"} • cap {w?.cap || wBase.cap || "—"} •{" "}
+                        {scheduleLabel(wBase)}
                       </div>
-                      <div style={{ marginTop: 8 }}>
-                        <span style={S.tag}>Adjusted: {a.adjustedValue}</span>
-                      </div>
-                      {a.note ? <div style={{ ...S.muted, marginTop: 8 }}>Note: {a.note}</div> : null}
+                      {wBase?.tiebreak ? <div style={{ ...S.muted, marginTop: 6 }}>Tiebreak: {wBase.tiebreak}</div> : null}
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <Button variant="primary" onClick={() => confirmAdjustment(a.id)} type="button">
-                        Approve FINAL
+                      <Button variant="primary" onClick={openSubmitModal} type="button">
+                        Submit score
                       </Button>
-                      <Button variant="danger" onClick={() => rejectAdjustment(a.id)} type="button">
-                        Reject
-                      </Button>
+                      <div style={S.tag}>{data.settings.submissionsClosed ? "Submissions closed" : "Submissions open"}</div>
+                    </div>
+                  </div>
+
+                  <div style={S.divider} />
+
+                  <div style={{ whiteSpace: "pre-wrap" }}>{w?.description || wBase.description || "No description."}</div>
+
+                  {(w?.equipment || []).length ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Equipment</div>
+                      <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {(w.equipment || []).map((x, i) => (
+                          <span key={`${x}_${i}`} style={S.tag}>
+                            {x}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {(w?.standards || []).length ? (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Standards</div>
+                      <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
+                        {(w.standards || []).map((x, i) => (
+                          <li key={`${x}_${i}`} style={{ ...S.muted, marginBottom: 4 }}>
+                            {x}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <div style={{ marginTop: 12, ...S.card, padding: 12 }}>
+                    <div style={{ fontWeight: 900 }}>Your status for this workout</div>
+                    <div style={{ ...S.muted, marginTop: 6 }}>
+                      Submitted: {getSubmission(wBase.id, athleteName)?.value ?? "—"} • Final: {getFinal(wBase.id, athleteName)?.value ?? "—"}
                     </div>
                   </div>
                 </div>
-              ))}
+              )}
+            </div>
+          ) : null}
 
-              {awaitingAdjustments.length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No pending adjustments.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Judges can propose adjustments from their view.</div>
+          {athleteTab === "my" ? <MySubmissionsPanel /> : null}
+          {athleteTab === "leaderboard" ? <LeaderboardPanel viewerRole="athlete" /> : null}
+        </div>
+
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Release schedule</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            Athletes only see workouts once released. Workouts not yet released are hidden.
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+              {(currentComp.workouts || []).map((w) => (
+                <div key={w.id} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span style={{ fontWeight: 800 }}>{w.name}</span>
+                  <span style={S.tag}>{scheduleLabel(w)}</span>
                 </div>
-              ) : null}
+              ))}
             </div>
           </div>
-        ) : null}
+        </div>
 
-        {headJudgeView === "leaderboard" ? <LeaderboardPanel /> : null}
-        {headJudgeView === "audit" ? <AuditPanel /> : null}
+        {showSubmitModal ? (
+          <SubmitModal
+            workoutBase={selectedWorkoutBase}
+            workout={selectedWorkout}
+            athlete={athleteName}
+            division={athleteDivision}
+            draft={submitDraft}
+            setDraft={setSubmitDraft}
+            onClose={() => setShowSubmitModal(false)}
+            onSubmit={submitScore}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
+  function SubmitModal({ workoutBase, workout, athlete, division, draft, setDraft, onClose, onSubmit }) {
+    const gate = canAthleteSubmitForWorkout(workoutBase);
+    return (
+      <div style={S.modalBackdrop} onMouseDown={onClose}>
+        <div style={S.modal} onMouseDown={(e) => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 950, fontSize: 16 }}>Submit score</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>
+                {athlete} • {division || "—"} • {(workout?.name || workoutBase?.name) ?? "Workout"}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="default" onClick={onClose} type="button">
+                Close
+              </Button>
+              <Button variant="primary" onClick={onSubmit} type="button" disabled={!gate.ok} style={!gate.ok ? { opacity: 0.6 } : null}>
+                Submit
+              </Button>
+            </div>
+          </div>
+
+          <div style={S.divider} />
+
+          {!gate.ok ? (
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900 }}>Submission blocked</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>{gate.reason}</div>
+            </div>
+          ) : null}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <Field label="Score value">
+              <input
+                style={S.input}
+                value={draft.value}
+                onChange={(e) => setDraft((d) => ({ ...d, value: e.target.value }))}
+                placeholder={workoutBase?.scoreType === "time" ? "e.g. 08:44" : "e.g. 110"}
+              />
+              <div style={{ ...S.muted, marginTop: 6 }}>
+                Type: <strong>{workoutBase?.scoreType}</strong> • Unit: <strong>{workout?.unit || workoutBase?.unit || "—"}</strong>
+              </div>
+            </Field>
+
+            <Field label="Video URL (optional)">
+              <input
+                style={S.input}
+                value={draft.videoUrl}
+                onChange={(e) => setDraft((d) => ({ ...d, videoUrl: e.target.value }))}
+                placeholder="Paste a link"
+              />
+            </Field>
+
+            <Field label="Notes (optional)" style={{ gridColumn: "1 / -1" }}>
+              <textarea
+                style={{ ...S.input, minHeight: 100, resize: "vertical" }}
+                value={draft.notes}
+                onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+                placeholder="Anything the judge should know..."
+              />
+            </Field>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function MySubmissionsPanel() {
+    const c = currentComp;
+    const rows = (c.workouts || [])
+      .filter((w) => isReleased(w)) // athlete can only see released workouts
+      .map((w) => {
+        const sub = c.submissions?.[w.id]?.[athleteName];
+        const fin = c.finalScores?.[w.id]?.[athleteName];
+        const pending = getPendingAdjustment(w.id, athleteName);
+        return {
+          workoutId: w.id,
+          workoutName: w.name,
+          submittedAt: sub?.submittedAt || "",
+          submittedValue: sub?.value ?? null,
+          status: sub?.status || "none",
+          finalValue: fin?.value ?? null,
+          pending: pending ? "awaiting_head_judge" : "",
+          judgeNote: sub?.judgeNote || "",
+        };
+      });
+
+    return (
+      <div style={{ ...S.card, padding: 12 }}>
+        <div style={{ fontWeight: 900, fontSize: 15 }}>My Submissions</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Shows your submitted and final score status for released workouts.</div>
+
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Workout</th>
+                <th style={S.th}>Submitted</th>
+                <th style={S.th}>Submitted at</th>
+                <th style={S.th}>Final</th>
+                <th style={S.th}>Status</th>
+                <th style={S.th}>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.workoutId}>
+                  <td style={S.td}>{r.workoutName}</td>
+                  <td style={S.td}>{r.submittedValue ?? "—"}</td>
+                  <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
+                  <td style={S.td}>
+                    <span style={S.tag}>{r.finalValue ?? "—"}</span>
+                  </td>
+                  <td style={S.td}>
+                    <span style={S.tag}>{r.finalValue != null ? "final" : r.pending || r.status}</span>
+                  </td>
+                  <td style={S.td}>
+                    <div style={S.muted}>{r.judgeNote || "—"}</div>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 ? (
+                <tr>
+                  <td style={S.td} colSpan={6}>
+                    <div style={S.muted}>No released workouts yet.</div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
 
   /* ================================
-     ROLE: Organiser
+     Judge Panel
   ================================ */
-  function OrganiserView() {
+  function JudgePanel() {
     return (
-      <div>
-        <div style={{ fontSize: 15, fontWeight: 900 }}>Organiser</div>
-        <div style={{ ...S.muted, marginTop: 4 }}>Edit workouts/scaling, manage live windows and visibility controls.</div>
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
+        <div style={{ flex: "1 1 760px", ...S.card }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>Judge</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>Review submissions and propose adjustments (no leaderboard view for judge).</div>
+            </div>
 
-        <div style={S.divider} />
-
-        <div style={{ ...S.row, marginBottom: 10 }}>
-          <Button variant={orgView === "workouts" ? "primary" : "default"} onClick={() => setOrgView("workouts")} type="button">
-            Workouts + Scaling
-          </Button>
-          <Button variant={orgView === "schedule" ? "primary" : "default"} onClick={() => setOrgView("schedule")} type="button">
-            Scheduling
-          </Button>
-          <Button variant={orgView === "controls" ? "primary" : "default"} onClick={() => setOrgView("controls")} type="button">
-            Controls
-          </Button>
-          <Button variant={orgView === "audit" ? "primary" : "default"} onClick={() => setOrgView("audit")} type="button">
-            Audit
-          </Button>
-
-          <div style={{ flex: 1 }} />
-
-          <Button variant="primary" onClick={openNewWorkout} type="button">
-            + New workout
-          </Button>
-        </div>
-
-        {orgView === "workouts" ? (
-          <div>
-            <div style={{ ...S.muted, marginBottom: 10 }}>Tip: open a workout to add division-specific scaling overrides.</div>
-            <WorkoutsList allowEdit />
+            <Field label="Judge name" style={{ width: 240 }}>
+              <Select value={judgeName} onChange={setJudgeName} options={currentComp?.judgePool?.length ? currentComp.judgePool : ["Judge"]} />
+            </Field>
           </div>
-        ) : null}
 
-        {orgView === "schedule" ? <SchedulePanel /> : null}
-        {orgView === "controls" ? <ControlsPanel /> : null}
-        {orgView === "audit" ? <AuditPanel /> : null}
-      </div>
-    );
-  }
+          <div style={S.divider} />
 
-  function SchedulePanel() {
-    return (
-      <div style={{ ...S.card, padding: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time). Athletes can only submit while live.</div>
+          <div style={{ ...S.row, marginBottom: 10 }}>
+            <Button variant={judgeView === "review" ? "primary" : "default"} onClick={() => setJudgeView("review")} type="button">
+              Review Submissions
+            </Button>
+            <Button variant={judgeView === "sent" ? "primary" : "default"} onClick={() => setJudgeView("sent")} type="button">
+              Adjustments Sent ({judgeSent.length})
+            </Button>
+          </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
-          {(currentComp.workouts || []).map((w) => (
-            <div key={w.id} style={{ ...S.card, padding: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <div style={{ fontWeight: 900 }}>{w.name}</div>
-                <div style={S.tag}>{workoutLiveLabel(w)}</div>
+          {judgeView === "review" ? (
+            <div>
+              <div style={{ ...S.card, padding: 12 }}>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>Filters</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
+                  <Field label="Search">
+                    <input
+                      style={S.input}
+                      value={judgeFilter.q}
+                      onChange={(e) => setJudgeFilter((f) => ({ ...f, q: e.target.value }))}
+                      placeholder="Name, workout, notes..."
+                    />
+                  </Field>
+                  <Field label="Workout">
+                    <Select
+                      value={judgeFilter.workoutId}
+                      onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
+                      options={[
+                        { value: "all", label: "All" },
+                        ...(currentComp.workouts || []).map((w) => ({ value: w.id, label: w.name })),
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Status">
+                    <Select
+                      value={judgeFilter.status}
+                      onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
+                      options={[
+                        { value: "all", label: "All" },
+                        { value: "submitted", label: "Submitted" },
+                        { value: "adjusted", label: "Adjusted (proposed)" },
+                        { value: "final", label: "Final" },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Division">
+                    <Select
+                      value={judgeFilter.division}
+                      onChange={(v) => setJudgeFilter((f) => ({ ...f, division: v }))}
+                      options={[{ value: "all", label: "All" }, ...compDivisions.map((d) => ({ value: d, label: d }))]}
+                    />
+                  </Field>
+                </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
-                <Field label="Opens">
-                  <input
-                    style={S.input}
-                    type="datetime-local"
-                    value={isoToLocalInput(w.liveWindow?.openAt)}
-                    onChange={(e) => {
-                      const iso = localInputToIso(e.target.value);
-                      updateComp(currentComp.id, (c) => {
-                        const ww = (c.workouts || []).find((x) => x.id === w.id);
-                        if (!ww) return c;
-                        ww.liveWindow = ww.liveWindow || {};
-                        ww.liveWindow.openAt = iso;
-                        return c;
-                      });
-                    }}
-                  />
-                </Field>
-                <Field label="Closes">
-                  <input
-                    style={S.input}
-                    type="datetime-local"
-                    value={isoToLocalInput(w.liveWindow?.closeAt)}
-                    onChange={(e) => {
-                      const iso = localInputToIso(e.target.value);
-                      updateComp(currentComp.id, (c) => {
-                        const ww = (c.workouts || []).find((x) => x.id === w.id);
-                        if (!ww) return c;
-                        ww.liveWindow = ww.liveWindow || {};
-                        ww.liveWindow.closeAt = iso;
-                        return c;
-                      });
-                    }}
-                  />
-                </Field>
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table style={S.table}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Submitted at</th>
+                      <th style={S.th}>Athlete</th>
+                      <th style={S.th}>Division</th>
+                      <th style={S.th}>Workout</th>
+                      <th style={S.th}>Value</th>
+                      <th style={S.th}>Notes</th>
+                      <th style={S.th}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {judgeFiltered.map((r) => (
+                      <tr key={`${r.workoutId}_${r.participant}`}>
+                        <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
+                        <td style={S.td}>
+                          <div style={{ fontWeight: 900 }}>{r.participant}</div>
+                          {r.videoUrl ? <div style={S.muted}>Video: {r.videoUrl}</div> : null}
+                        </td>
+                        <td style={S.td}>{r.division || "—"}</td>
+                        <td style={S.td}>{r.workoutName}</td>
+                        <td style={S.td}>
+                          <span style={S.tag}>{r.value ?? "—"}</span>
+                          <div style={{ ...S.muted, marginTop: 6 }}>{r.status}</div>
+                        </td>
+                        <td style={S.td}>
+                          <div style={S.muted}>{r.notes || "—"}</div>
+                          {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: {r.judgeNote}</div> : null}
+                        </td>
+                        <td style={S.td}>
+                          <Button variant="primary" onClick={() => startAdjust(r)} type="button">
+                            Propose adjustment
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                    {judgeFiltered.length === 0 ? (
+                      <tr>
+                        <td style={S.td} colSpan={7}>
+                          <div style={S.muted}>No submissions match your filters.</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              {adjustDraft.workoutId ? (
+                <div style={{ ...S.card, padding: 12, marginTop: 12 }}>
+                  <div style={{ fontWeight: 900, fontSize: 15 }}>Propose adjustment</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Sends to Head Judge. Final scores are set only by Head Judge.</div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+                    <Field label="Athlete">
+                      <input style={S.input} value={adjustDraft.participant} readOnly />
+                    </Field>
+                    <Field label="Workout">
+                      <input
+                        style={S.input}
+                        value={(currentComp.workouts || []).find((w) => w.id === adjustDraft.workoutId)?.name || adjustDraft.workoutId}
+                        readOnly
+                      />
+                    </Field>
+                    <Field label="Adjusted value" style={{ gridColumn: "1 / -1" }}>
+                      <input
+                        style={S.input}
+                        value={adjustDraft.adjustedValue}
+                        onChange={(e) => setAdjustDraft((d) => ({ ...d, adjustedValue: e.target.value }))}
+                        placeholder="e.g. 09:12 or 105"
+                      />
+                    </Field>
+                    <Field label="Reason / note (optional)" style={{ gridColumn: "1 / -1" }}>
+                      <textarea
+                        style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                        value={adjustDraft.note}
+                        onChange={(e) => setAdjustDraft((d) => ({ ...d, note: e.target.value }))}
+                        placeholder="Explain the adjustment (no-reps, standards, missing rep, etc.)"
+                      />
+                    </Field>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                    <Button variant="primary" onClick={saveAdjustment} type="button">
+                      Send to Head Judge
+                    </Button>
+                    <Button
+                      variant="default"
+                      onClick={() => setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" })}
+                      type="button"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {judgeView === "sent" ? (
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>Adjustments sent</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>Track what you proposed and its current status.</div>
+
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table style={S.table}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Created</th>
+                      <th style={S.th}>Athlete</th>
+                      <th style={S.th}>Workout</th>
+                      <th style={S.th}>Adjusted value</th>
+                      <th style={S.th}>Status</th>
+                      <th style={S.th}>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {judgeSent.map((a) => (
+                      <tr key={a.id}>
+                        <td style={S.td}>{prettyDateTime(a.createdAt)}</td>
+                        <td style={S.td}>{a.participant}</td>
+                        <td style={S.td}>{(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}</td>
+                        <td style={S.td}>
+                          <span style={S.tag}>{a.adjustedValue}</span>
+                        </td>
+                        <td style={S.td}>
+                          <span style={S.tag}>{a.status}</span>
+                        </td>
+                        <td style={S.td}>
+                          <div style={S.muted}>{a.note || "—"}</div>
+                          {a.status === "rejected" ? (
+                            <div style={{ ...S.muted, marginTop: 6 }}>Rejected: {a.rejectReason || "—"}</div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                    {judgeSent.length === 0 ? (
+                      <tr>
+                        <td style={S.td} colSpan={6}>
+                          <div style={S.muted}>No adjustments yet.</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
               </div>
             </div>
-          ))}
+          ) : null}
+        </div>
+
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Judge reminders</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            • Propose adjustments where needed
+            <br />• Head Judge finalises all scores
+            <br />• Leaderboard is organiser-controlled and publish-gated
+          </div>
         </div>
       </div>
     );
   }
 
-  function ControlsPanel() {
+  /* ================================
+     Head Judge Panel
+  ================================ */
+  function HeadJudgePanel() {
     return (
-      <div style={{ ...S.card, padding: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Visibility + submission gates.</div>
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
+        <div style={{ flex: "1 1 760px", ...S.card }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>Head Judge</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>
+                Approve/reject adjustments and finalise submissions. (No leaderboard view for Head Judge.)
+              </div>
+            </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
-          <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
-          <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
-          <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only visibility" />
-          <Toggle
-            checked={data.settings.allowProvisionalForStaff}
-            onChange={() => toggleSetting("allowProvisionalForStaff")}
-            label="Staff can view provisional"
-          />
+            <Field label="Head Judge name" style={{ width: 240 }}>
+              <Select
+                value={headJudgeName}
+                onChange={setHeadJudgeName}
+                options={currentComp?.headJudgePool?.length ? currentComp.headJudgePool : ["Head Judge"]}
+              />
+            </Field>
+          </div>
+
+          <div style={S.divider} />
+
+          <div style={{ ...S.row, marginBottom: 10 }}>
+            <Button variant={headJudgeView === "confirm" ? "primary" : "default"} onClick={() => setHeadJudgeView("confirm")} type="button">
+              Confirm Adjustments ({awaitingAdjustments.length})
+            </Button>
+            <Button variant={headJudgeView === "finalise" ? "primary" : "default"} onClick={() => setHeadJudgeView("finalise")} type="button">
+              Finalise Submissions ({nonFinalSubmissions.length})
+            </Button>
+            <Button variant={headJudgeView === "audit" ? "primary" : "default"} onClick={() => setHeadJudgeView("audit")} type="button">
+              Audit
+            </Button>
+          </div>
+
+          {headJudgeView === "confirm" ? (
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>Awaiting confirmation</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>Approve to set final. Reject to return to submitted.</div>
+
+              <Field label="Reject note (optional)" style={{ marginTop: 10 }}>
+                <input style={S.input} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="Reason for rejection..." />
+              </Field>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
+                {awaitingAdjustments.map((a) => (
+                  <div key={a.id} style={{ ...S.card, padding: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontWeight: 950 }}>
+                          {a.participant} • {(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}
+                        </div>
+                        <div style={{ ...S.muted, marginTop: 4 }}>
+                          Proposed by {a.judgeName} at {prettyDateTime(a.createdAt)}
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                          <span style={S.tag}>Adjusted: {a.adjustedValue}</span>
+                        </div>
+                        {a.note ? <div style={{ ...S.muted, marginTop: 8 }}>Note: {a.note}</div> : null}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <Button variant="primary" onClick={() => confirmAdjustment(a.id)} type="button">
+                          Approve FINAL
+                        </Button>
+                        <Button variant="danger" onClick={() => rejectAdjustment(a.id)} type="button">
+                          Reject
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {awaitingAdjustments.length === 0 ? (
+                  <div style={{ ...S.card, padding: 12 }}>
+                    <div style={{ fontWeight: 900 }}>No pending adjustments.</div>
+                    <div style={{ ...S.muted, marginTop: 6 }}>Use “Finalise Submissions” to mark remaining scores as final.</div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {headJudgeView === "finalise" ? (
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>Finalise remaining submissions</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>
+                These are submissions with no final score and no pending adjustment. You can accept as-is, or override the final value.
+              </div>
+
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table style={S.table}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Submitted at</th>
+                      <th style={S.th}>Athlete</th>
+                      <th style={S.th}>Division</th>
+                      <th style={S.th}>Workout</th>
+                      <th style={S.th}>Submitted</th>
+                      <th style={S.th}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nonFinalSubmissions.map((r) => (
+                      <tr key={`${r.workoutId}_${r.participant}`}>
+                        <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
+                        <td style={S.td}>{r.participant}</td>
+                        <td style={S.td}>{r.division || "—"}</td>
+                        <td style={S.td}>{r.workoutName}</td>
+                        <td style={S.td}>
+                          <span style={S.tag}>{r.submittedValue ?? "—"}</span>
+                        </td>
+                        <td style={S.td}>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <Button variant="primary" onClick={() => acceptAsFinal(r)} type="button">
+                              Accept as final
+                            </Button>
+                            <Button variant="default" onClick={() => startOverrideFinal(r)} type="button">
+                              Override final
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {nonFinalSubmissions.length === 0 ? (
+                      <tr>
+                        <td style={S.td} colSpan={6}>
+                          <div style={S.muted}>No remaining submissions to finalise.</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              {finaliseDraft.workoutId ? (
+                <div style={{ ...S.card, padding: 12, marginTop: 12 }}>
+                  <div style={{ fontWeight: 900, fontSize: 15 }}>Override final score</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>
+                    {finaliseDraft.participant} •{" "}
+                    {(currentComp.workouts || []).find((w) => w.id === finaliseDraft.workoutId)?.name || finaliseDraft.workoutId}
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+                    <Field label="Final value">
+                      <input
+                        style={S.input}
+                        value={finaliseDraft.value}
+                        onChange={(e) => setFinaliseDraft((d) => ({ ...d, value: e.target.value }))}
+                        placeholder="Enter final value"
+                      />
+                    </Field>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                    <Button variant="primary" onClick={saveOverrideFinal} type="button">
+                      Save final override
+                    </Button>
+                    <Button variant="default" onClick={() => setFinaliseDraft({ workoutId: "", participant: "", value: "" })} type="button">
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {headJudgeView === "audit" ? <AuditPanel /> : null}
         </div>
 
-        <div style={S.divider} />
-
-        <div style={{ fontWeight: 900 }}>Admin actions</div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
-          <Button variant="default" onClick={exportAll} type="button">
-            Export JSON
-          </Button>
-          <Button variant="default" onClick={() => fileInputRef.current?.click()} type="button">
-            Import JSON
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: "none" }}
-            onChange={async (e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              const res = await importJson(f);
-              if (!res.ok) showToast("warn", res.error);
-              else showToast("ok", "Imported.");
-              e.target.value = "";
-            }}
-          />
-          <Button variant="danger" onClick={resetDemo} type="button">
-            Reset demo
-          </Button>
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Head Judge publish checklist</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            Publish requires:
+            <br />• 0 pending adjustments
+            <br />• All closed workouts have final scores for all athletes
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <div style={S.tag}>{publishStatus.canPublish ? "Ready to publish" : "Not ready"}</div>
+            {!publishStatus.canPublish ? (
+              <div style={{ ...S.muted, marginTop: 8 }}>
+                {publishStatus.reasons.map((r, i) => (
+                  <div key={i}>• {r}</div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     );
@@ -2103,7 +2196,7 @@ export default function App() {
     return (
       <div style={{ ...S.card, padding: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Shows key demo actions (submissions, adjustments, finals, workout edits).</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Key actions: submissions, adjustments, finals, publish, schedule edits.</div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
           {(currentComp.audit || []).map((a) => (
@@ -2119,7 +2212,7 @@ export default function App() {
           {(currentComp.audit || []).length === 0 ? (
             <div style={{ ...S.card, padding: 12 }}>
               <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
-              <div style={{ ...S.muted, marginTop: 6 }}>Create/edit workouts and process scores to generate audit.</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>Run submissions, adjustments, finals, schedule edits, publish to populate.</div>
             </div>
           ) : null}
         </div>
@@ -2128,448 +2221,132 @@ export default function App() {
   }
 
   /* ================================
-     COMMON: Workouts List
+     Organiser Panel
   ================================ */
-  function WorkoutsList({ division = "", allowEdit = false }) {
-    const list = currentComp.workouts || [];
+  function OrganiserPanel() {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
-        {list.map((wBase) => {
-          const w = division ? workoutForDivision(wBase, division) : wBase;
-          const scaled = !!(division && wBase.scalingByDivision?.[division]);
-
-          return (
-            <div key={wBase.id} style={{ ...S.card, padding: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 900, fontSize: 15 }}>{w.name}</div>
-                  <div style={{ ...S.muted, marginTop: 4 }}>
-                    {w.scoreType} • {w.unit || "—"} • cap {w.cap || "—"} • {workoutLiveLabel(wBase)}
-                    {division ? ` • division: ${division}` : ""}
-                  </div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
-                    {scaled ? <span style={S.tag}>SCALED</span> : null}
-                    <span style={S.tag}>Sort: {isAscForWorkout(w) ? "ASC (lower wins)" : "DESC (higher wins)"}</span>
-                    {w.divisionNotes ? <span style={S.tag}>{w.divisionNotes}</span> : null}
-                  </div>
-                </div>
-
-                {allowEdit ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-                    <Button variant="primary" onClick={() => openEditWorkout(wBase)} type="button">
-                      Edit
-                    </Button>
-                    <Button variant="danger" onClick={() => deleteWorkout(wBase.id)} type="button">
-                      Delete
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-
-              <div style={S.divider} />
-
-              {w.description ? <div style={{ whiteSpace: "pre-wrap" }}>{w.description}</div> : <div style={S.muted}>No description.</div>}
-
-              {w.equipment?.length ? (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Equipment</div>
-                  <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {w.equipment.map((x, i) => (
-                      <span key={`${x}_${i}`} style={S.tag}>
-                        {x}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {w.standards?.length ? (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Standards</div>
-                  <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
-                    {w.standards.map((x, i) => (
-                      <li key={`${x}_${i}`} style={{ ...S.muted, marginBottom: 4 }}>
-                        {x}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              {w.tiebreak ? (
-                <div style={{ marginTop: 10, ...S.muted }}>
-                  <strong style={{ opacity: 0.95 }}>Tiebreak:</strong> {w.tiebreak}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
-  /* ================================
-     COMMON: Leaderboard Panel (Points)
-  ================================ */
-  function LeaderboardPanel() {
-    if (leaderboardHidden) {
-      return (
-        <div style={{ ...S.card, padding: 12 }}>
-          <div style={{ fontWeight: 900 }}>Leaderboard hidden</div>
-          <div style={{ ...S.muted, marginTop: 6 }}>The organiser has hidden the leaderboard for this competition.</div>
-        </div>
-      );
-    }
-
-    return (
-      <div style={{ ...S.card, padding: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div>
-            <div style={{ fontWeight: 900, fontSize: 15 }}>Leaderboard (Points)</div>
-            <div style={{ ...S.muted, marginTop: 4 }}>
-              Each workout ranks participants; points = N - rank + 1. Missing/hidden score = 0 points. Scope: {lbDivision}.
-              {finalOnly && !isStaff ? " (final-only enabled)" : ""}
-            </div>
-          </div>
-          <div style={S.pill}>
-            <strong>Visible scores</strong>
-            <span style={{ opacity: 0.9 }}>{canSeeProvisional() ? "Provisional + Final" : "Final only"}</span>
-          </div>
-        </div>
-
-        <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={S.table}>
-            <thead>
-              <tr>
-                <th style={S.th}>Rank</th>
-                <th style={S.th}>{mode === "athlete" ? "Athlete" : "Team"}</th>
-                <th style={S.th}>Division</th>
-                <th style={S.th}>Total points</th>
-                {(currentComp.workouts || []).map((w) => (
-                  <th key={w.id} style={S.th}>
-                    {w.name}
-                    <div style={S.muted}>pts / value</div>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {pointsLeaderboard.map((row, idx) => (
-                <tr key={row.name}>
-                  <td style={S.td}>
-                    <span style={S.tag}>{idx + 1}</span>
-                  </td>
-                  <td style={S.td}>
-                    <div style={{ fontWeight: 900 }}>{row.name}</div>
-                  </td>
-                  <td style={S.td}>{row.division || "—"}</td>
-                  <td style={S.td}>
-                    <span style={S.tag}>{row.totalPoints}</span>
-                  </td>
-
-                  {row.breakdown.map((b) => (
-                    <td key={b.workoutId} style={S.td}>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <span style={S.tag}>{b.points} pts</span>
-                        <div style={S.muted}>
-                          {b.value == null ? "—" : String(b.value)} • {b.status}
-                        </div>
-                      </div>
-                    </td>
-                  ))}
-                </tr>
-              ))}
-
-              {pointsLeaderboard.length === 0 ? (
-                <tr>
-                  <td style={S.td} colSpan={5 + (currentComp.workouts || []).length}>
-                    <div style={S.muted}>No participants in this scope.</div>
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    );
-  }
-
-  /* ================================
-     WORKOUT EDITOR MODAL
-  ================================ */
-  function WorkoutEditorModal({ editor, onClose, onSave, divisions }) {
-    const [draft, setDraft] = useState(editor.draft);
-
-    function setField(key, value) {
-      setDraft((d) => ({ ...d, [key]: value }));
-    }
-
-    function setScale(division, key, value) {
-      setDraft((d) => {
-        const next = { ...(d.scalingByDivision || {}) };
-        next[division] = { ...(next[division] || {}) };
-        if (value === "" || value == null) {
-          // allow clearing specific fields by setting empty string
-          next[division][key] = "";
-        } else {
-          next[division][key] = value;
-        }
-        return { ...d, scalingByDivision: next };
-      });
-    }
-
-    function setScaleList(division, key, text) {
-      const arr = String(text || "")
-        .split("\n")
-        .map((x) => x.trim())
-        .filter(Boolean);
-      setDraft((d) => {
-        const next = { ...(d.scalingByDivision || {}) };
-        next[division] = { ...(next[division] || {}) };
-        next[division][key] = arr;
-        return { ...d, scalingByDivision: next };
-      });
-    }
-
-    function removeScale(division) {
-      setDraft((d) => {
-        const next = { ...(d.scalingByDivision || {}) };
-        delete next[division];
-        return { ...d, scalingByDivision: next };
-      });
-    }
-
-    return (
-      <div style={S.modalBackdrop} onMouseDown={onClose}>
-        <div style={S.modal} onMouseDown={(e) => e.stopPropagation()}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ fontWeight: 950, fontSize: 16 }}>
-              {editor.mode === "edit" ? "Edit workout" : "New workout"}
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <Button variant="default" onClick={onClose} type="button">
-                Close
-              </Button>
-              <Button variant="primary" onClick={() => onSave(draft)} type="button">
-                Save
-              </Button>
-            </div>
-          </div>
-
-          <div style={S.divider} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Workout name">
-              <input style={S.input} value={draft.name} onChange={(e) => setField("name", e.target.value)} />
-            </Field>
-
-            <Field label="Division notes">
-              <input style={S.input} value={draft.divisionNotes} onChange={(e) => setField("divisionNotes", e.target.value)} />
-            </Field>
-
-            <Field label="Score type">
-              <Select
-                value={draft.scoreType}
-                onChange={(v) => setField("scoreType", v)}
-                options={[
-                  { value: "time", label: "time" },
-                  { value: "reps", label: "reps" },
-                  { value: "load", label: "load" },
-                  { value: "distance", label: "distance" },
-                  { value: "calories", label: "calories" },
-                ]}
-              />
-            </Field>
-
-            <Field label="Sort">
-              <Select value={draft.sort} onChange={(v) => setField("sort", v)} options={[{ value: "asc", label: "asc" }, { value: "desc", label: "desc" }]} />
-            </Field>
-
-            <Field label="Unit">
-              <input style={S.input} value={draft.unit} onChange={(e) => setField("unit", e.target.value)} placeholder="e.g. time (mm:ss), reps, kg" />
-            </Field>
-
-            <Field label="Cap">
-              <input style={S.input} value={draft.cap} onChange={(e) => setField("cap", e.target.value)} placeholder="e.g. 12:00" />
-            </Field>
-
-            <Field label="Tiebreak (optional)" style={{ gridColumn: "1 / -1" }}>
-              <input style={S.input} value={draft.tiebreak} onChange={(e) => setField("tiebreak", e.target.value)} />
-            </Field>
-
-            <Field label="Description" style={{ gridColumn: "1 / -1" }}>
-              <textarea
-                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
-                value={draft.description}
-                onChange={(e) => setField("description", e.target.value)}
-                placeholder="Workout details..."
-              />
-            </Field>
-
-            <Field label="Equipment (one per line)">
-              <textarea
-                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
-                value={(draft.equipment || []).join("\n")}
-                onChange={(e) =>
-                  setField(
-                    "equipment",
-                    e.target.value
-                      .split("\n")
-                      .map((x) => x.trim())
-                      .filter(Boolean)
-                  )
-                }
-              />
-            </Field>
-
-            <Field label="Standards (one per line)">
-              <textarea
-                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
-                value={(draft.standards || []).join("\n")}
-                onChange={(e) =>
-                  setField(
-                    "standards",
-                    e.target.value
-                      .split("\n")
-                      .map((x) => x.trim())
-                      .filter(Boolean)
-                  )
-                }
-              />
-            </Field>
-          </div>
-
-          <div style={S.divider} />
-
-          <div style={{ fontWeight: 950 }}>Live window</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
-            <Field label="Opens">
-              <input
-                style={S.input}
-                type="datetime-local"
-                value={isoToLocalInput(draft.liveWindow?.openAt)}
-                onChange={(e) => setField("liveWindow", { ...(draft.liveWindow || {}), openAt: localInputToIso(e.target.value) })}
-              />
-            </Field>
-            <Field label="Closes">
-              <input
-                style={S.input}
-                type="datetime-local"
-                value={isoToLocalInput(draft.liveWindow?.closeAt)}
-                onChange={(e) => setField("liveWindow", { ...(draft.liveWindow || {}), closeAt: localInputToIso(e.target.value) })}
-              />
-            </Field>
-          </div>
-
-          <div style={S.divider} />
-
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
+        <div style={{ flex: "1 1 760px", ...S.card }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <div>
-              <div style={{ fontWeight: 950 }}>Division scaling overrides</div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>Organiser</div>
               <div style={{ ...S.muted, marginTop: 4 }}>
-                Add overrides per division (optional). Any field left blank falls back to base workout.
+                You alone have: Quick Controls, Directory, Settings/Admin, release/close scheduling, and leaderboard publishing.
               </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={S.tag}>{data.settings.leaderboardPublished ? "Leaderboard: Published" : "Leaderboard: Unpublished"}</div>
+              <div style={S.tag}>{publishStatus.canPublish ? "Judging complete" : "Judging incomplete"}</div>
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
-            {(divisions || []).map((div) => {
-              const has = !!draft.scalingByDivision?.[div];
-              const s = draft.scalingByDivision?.[div] || {};
-              return (
-                <div key={div} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                    <div style={{ fontWeight: 900 }}>
-                      {div} {has ? <span style={{ ...S.tag, marginLeft: 8 }}>OVERRIDES ON</span> : <span style={{ ...S.tag, marginLeft: 8 }}>OFF</span>}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {has ? (
-                        <Button variant="danger" onClick={() => removeScale(div)} type="button">
-                          Remove overrides
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="primary"
-                          onClick={() =>
-                            setDraft((d) => ({ ...d, scalingByDivision: { ...(d.scalingByDivision || {}), [div]: {} } }))
-                          }
-                          type="button"
-                        >
-                          Add overrides
-                        </Button>
-                      )}
-                    </div>
-                  </div>
+          <div style={S.divider} />
 
-                  {has ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
-                      <Field label="Description override" style={{ gridColumn: "1 / -1" }}>
-                        <textarea
-                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                          value={s.description || ""}
-                          onChange={(e) => setScale(div, "description", e.target.value)}
-                          placeholder="Leave blank to use base description"
-                        />
-                      </Field>
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Quick Controls</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+              <Toggle
+                checked={data.settings.submissionsClosed}
+                onChange={() => {
+                  toggleSetting("submissionsClosed");
+                  addAudit(`Submissions ${!data.settings.submissionsClosed ? "closed" : "opened"}`);
+                }}
+                label="Close submissions"
+                hint="Stops athletes submitting new scores."
+              />
 
-                      <Field label="Unit override">
-                        <input style={S.input} value={s.unit || ""} onChange={(e) => setScale(div, "unit", e.target.value)} />
-                      </Field>
-
-                      <Field label="Cap override">
-                        <input style={S.input} value={s.cap || ""} onChange={(e) => setScale(div, "cap", e.target.value)} />
-                      </Field>
-
-                      <Field label="Sort override">
-                        <Select
-                          value={s.sort || ""}
-                          onChange={(v) => setScale(div, "sort", v)}
-                          options={[
-                            { value: "", label: "(use base)" },
-                            { value: "asc", label: "asc" },
-                            { value: "desc", label: "desc" },
-                          ]}
-                        />
-                      </Field>
-
-                      <Field label="Score type override">
-                        <Select
-                          value={s.scoreType || ""}
-                          onChange={(v) => setScale(div, "scoreType", v)}
-                          options={[
-                            { value: "", label: "(use base)" },
-                            { value: "time", label: "time" },
-                            { value: "reps", label: "reps" },
-                            { value: "load", label: "load" },
-                            { value: "distance", label: "distance" },
-                            { value: "calories", label: "calories" },
-                          ]}
-                        />
-                      </Field>
-
-                      <Field label="Equipment override (one per line)" style={{ gridColumn: "1 / -1" }}>
-                        <textarea
-                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                          value={Array.isArray(s.equipment) ? s.equipment.join("\n") : ""}
-                          onChange={(e) => setScaleList(div, "equipment", e.target.value)}
-                        />
-                      </Field>
-
-                      <Field label="Standards override (one per line)" style={{ gridColumn: "1 / -1" }}>
-                        <textarea
-                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                          value={Array.isArray(s.standards) ? s.standards.join("\n") : ""}
-                          onChange={(e) => setScaleList(div, "standards", e.target.value)}
-                        />
-                      </Field>
-                    </div>
-                  ) : (
-                    <div style={{ ...S.muted, marginTop: 10 }}>No overrides for this division.</div>
-                  )}
-                </div>
-              );
-            })}
+              <Toggle
+                checked={data.settings.leaderboardPublished}
+                onChange={(next) => setLeaderboardPublished(next)}
+                label="Publish leaderboard"
+                hint={
+                  publishStatus.canPublish
+                    ? "Judging complete. Publishing will reveal leaderboard to athletes (future workouts still blurred/excluded)."
+                    : `Cannot publish yet: ${publishStatus.reasons[0] || "Judging incomplete"}`
+                }
+              />
+            </div>
           </div>
+
+          <div style={S.divider} />
+
+          <SchedulePanel />
+
+          <div style={S.divider} />
+
+          <LeaderboardPanel viewerRole="organiser" />
+        </div>
+
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Organiser tools</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            • Directory + Settings/Admin tabs appear only for organiser
+            <br />• Set release/close per workout below
+            <br />• Publish leaderboard only when judging complete
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function SchedulePanel() {
+    return (
+      <div style={{ ...S.card, padding: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Workout scheduling (Release + Close)</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>
+          Athletes cannot see workouts until Release. A workout is “counted” on the leaderboard only once it has reached Close/Completion.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
+          {(currentComp.workouts || []).map((w) => (
+            <div key={w.id} style={{ ...S.card, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ fontWeight: 900 }}>{w.name}</div>
+                <div style={S.tag}>{scheduleLabel(w)}</div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
+                <Field label="Release (visible to athletes)">
+                  <input
+                    style={S.input}
+                    type="datetime-local"
+                    value={isoToLocalInput(w.schedule?.releaseAt)}
+                    onChange={(e) => {
+                      const iso = localInputToIso(e.target.value);
+                      updateComp(currentComp.id, (c) => {
+                        const ww = (c.workouts || []).find((x) => x.id === w.id);
+                        if (!ww) return c;
+                        ww.schedule = ww.schedule || {};
+                        ww.schedule.releaseAt = iso;
+                        return c;
+                      });
+                      addAudit(`Schedule changed: ${w.id} releaseAt`);
+                    }}
+                  />
+                </Field>
+
+                <Field label="Close/Completion (counted on leaderboard after this)">
+                  <input
+                    style={S.input}
+                    type="datetime-local"
+                    value={isoToLocalInput(w.schedule?.closeAt)}
+                    onChange={(e) => {
+                      const iso = localInputToIso(e.target.value);
+                      updateComp(currentComp.id, (c) => {
+                        const ww = (c.workouts || []).find((x) => x.id === w.id);
+                        if (!ww) return c;
+                        ww.schedule = ww.schedule || {};
+                        ww.schedule.closeAt = iso;
+                        return c;
+                      });
+                      addAudit(`Schedule changed: ${w.id} closeAt`);
+                    }}
+                  />
+                </Field>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -2592,26 +2369,13 @@ export default function App() {
   }
 
   /* ================================
-     SETTINGS / ADMIN
+     Settings / Admin (organiser only)
   ================================ */
   const AdminPanel = () => (
     <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
       <div style={{ flex: "1 1 760px", ...S.card }}>
-        <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Global demo toggles + import/export. Stored in localStorage.</div>
-
-        <div style={S.divider} />
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
-          <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
-          <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only visibility" />
-          <Toggle
-            checked={data.settings.allowProvisionalForStaff}
-            onChange={() => toggleSetting("allowProvisionalForStaff")}
-            label="Staff can view provisional"
-          />
-        </div>
+        <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin (Organiser only)</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Export/import demo JSON, reset storage.</div>
 
         <div style={S.divider} />
 
@@ -2642,26 +2406,60 @@ export default function App() {
         </div>
 
         <div style={{ ...S.muted, marginTop: 10 }}>
-          Tip: to “go production”, you’ll remove DEFAULT_DATA and replace updateComp() calls with API calls (and hydrate state from backend).
+          Publish is gated by judging completeness (no pending adjustments, and final scores exist for all athletes on closed workouts).
         </div>
       </div>
 
       <div style={{ flex: "0 0 360px", ...S.card }}>
-        <div style={{ fontWeight: 900 }}>Demo workflow script</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>
-          1) Set role to Athlete, submit a score.
-          <br />
-          2) Set role to Judge, propose adjustment.
-          <br />
-          3) Set role to Head Judge, approve FINAL.
-          <br />
-          4) Set role to Spectator to see leaderboard changes.
-          <br />
-          5) Set role to Organiser to hide leaderboard / close submissions.
+        <div style={{ fontWeight: 900 }}>Publish readiness</div>
+        <div style={{ marginTop: 10 }}>
+          <div style={S.tag}>{publishStatus.canPublish ? "Ready to publish" : "Not ready"}</div>
+          {!publishStatus.canPublish ? (
+            <div style={{ ...S.muted, marginTop: 8 }}>
+              {publishStatus.reasons.map((r, i) => (
+                <div key={i}>• {r}</div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ ...S.muted, marginTop: 8 }}>You can publish from the organiser quick controls on the Competition tab.</div>
+          )}
         </div>
       </div>
     </div>
   );
+
+  /* ================================
+     Competition Panel root
+  ================================ */
+  const CompetitionPanel = () => {
+    if (!currentComp) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
+
+    return (
+      <div style={{ ...S.card, marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 950 }}>{currentComp.name}</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>
+              {prettyDate(currentComp.date)} • {currentComp.location}
+            </div>
+            <div style={{ ...S.muted, marginTop: 6 }}>{currentComp.description}</div>
+          </div>
+
+          {isOrganiser ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={S.tag}>{data.settings.submissionsClosed ? "Submissions: Closed" : "Submissions: Open"}</div>
+              <div style={S.tag}>{data.settings.leaderboardPublished ? "Leaderboard: Published" : "Leaderboard: Unpublished"}</div>
+            </div>
+          ) : null}
+        </div>
+
+        {role === "athlete" ? <AthletePanel /> : null}
+        {role === "judge" ? <JudgePanel /> : null}
+        {role === "head_judge" ? <HeadJudgePanel /> : null}
+        {role === "organiser" ? <OrganiserPanel /> : null}
+      </div>
+    );
+  };
 
   /* ================================
      APP ROOT
@@ -2673,20 +2471,14 @@ export default function App() {
         <Tabs />
 
         {tab === "competition" ? <CompetitionPanel /> : null}
-        {tab === "directory" ? <DirectoryPanel /> : null}
-        {tab === "admin" ? <AdminPanel /> : null}
+        {tab === "directory" && isOrganiser ? <DirectoryPanel /> : null}
+        {tab === "admin" && isOrganiser ? <AdminPanel /> : null}
       </div>
-
-      {workoutEditor ? (
-        <WorkoutEditorModal
-          editor={workoutEditor}
-          onClose={() => setWorkoutEditor(null)}
-          onSave={saveWorkout}
-          divisions={compDivisions}
-        />
-      ) : null}
 
       <Toast />
     </div>
   );
 }
+``
+
+'*/'
