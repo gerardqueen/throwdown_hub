@@ -1,18 +1,21 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
-
-/**
- * Throwdown Hub — Single-file Demo App.jsx (Role-specific UX)
- * - Athlete/Team Manager: view workouts, submit online scores, see leaderboard
- * - Judge: review submissions, adjust scores
- * - Head Judge: confirm adjusted scores -> final
- * - Organiser: set workouts + live windows, toggle leaderboard/submissions, manage everything
- * - No router, no external UI imports, localStorage persistence
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";import React, { useEffect, useMemo, use — Single-file Demo App.jsx (Role-specific UX)
+ * Improvements:
+ * - Division leaderboards (Overall + per division tabs)
+ * - Workout scaling per division (description/standards/equipment/unit/cap overrides)
+ * - Missing workout scores show as 0 (instead of blank) in leaderboards ("0s")
+ * - Fixes prior build issues (missing bracket + broken anchors)
+ *
+ * Workflow:
+ * - Athlete/Team Manager submits online score (per workout, per division rules)
+ * - Judge reviews submissions and creates adjustments
+ * - Head Judge confirms adjustments -> FINAL scores
+ * - Organiser can set workouts, scaling, and live windows, and hide leaderboard / close submissions
  */
 
 /* ================================
    LOCAL STORAGE
 ================================ */
-const LS_KEY = "tdh_single_file_demo_v3";
+const LS_KEY = "tdh_single_file_demo_v4";
 
 function safeParse(json, fallback) {
   try {
@@ -89,6 +92,13 @@ function downloadJson(filename, obj) {
   URL.revokeObjectURL(url);
 }
 
+function csvToArr(csv) {
+  return String(csv || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 /* ================================
    ROLES
 ================================ */
@@ -97,7 +107,6 @@ const ROLES = ["spectator", "athlete", "team_manager", "judge", "head_judge", "o
 /* ================================
    DEFAULT DEMO DATA
 ================================ */
-// Helper: build default live windows in the near future
 function defaultWindow(hoursFromNowOpen, hoursDuration) {
   const now = new Date();
   const open = new Date(now.getTime() + hoursFromNowOpen * 3600 * 1000);
@@ -105,8 +114,12 @@ function defaultWindow(hoursFromNowOpen, hoursDuration) {
   return { openAt: open.toISOString(), closeAt: close.toISOString() };
 }
 
+/**
+ * scalingByDivision: per-division overrides for the workout.
+ * If a division is missing, the base workout fields apply.
+ */
 const DEFAULT_DATA = {
-  meta: { version: 3, createdAt: new Date().toISOString() },
+  meta: { version: 4, createdAt: new Date().toISOString() },
 
   role: "spectator",
   mode: "athlete", // athlete | team
@@ -118,9 +131,9 @@ const DEFAULT_DATA = {
 
   settings: {
     hideLeaderboard: false,
-    submissionsClosed: false, // global gate
-    finalOnlyLeaderboard: false, // if true: only FINAL scores count/display for non-privileged
-    allowProvisionalForStaff: true, // staff can still see provisional when finalOnly is on
+    submissionsClosed: false,
+    finalOnlyLeaderboard: false, // non-staff see only FINAL if true
+    allowProvisionalForStaff: true, // staff can still see provisional when final-only is on
   },
 
   directory: {
@@ -132,7 +145,7 @@ const DEFAULT_DATA = {
         endDate: "2026-06-21",
         city: "London",
         venue: "Docklands Arena",
-        divisions: ["RX", "Scaled", "Masters 35+"],
+        divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
         tags: ["throwdown", "two-day"],
         status: "upcoming",
         regOpen: true,
@@ -150,62 +163,97 @@ const DEFAULT_DATA = {
       date: "2026-06-20",
       location: "London",
       description:
-        "Role-based demo: athletes submit online scores, judges adjust, head judge confirms. Organiser controls workouts + live windows.",
+        "Role-based demo: athletes submit online scores, judges adjust, head judge confirms. Organiser controls workouts + scaling + live windows.",
       divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
 
-      // Participants
       athletes: [
         { name: "Sam Carter", division: "RX" },
         { name: "Jess Morgan", division: "Scaled" },
         { name: "Mike Patel", division: "Intermediate" },
-        { name: "Aisha Khan", division: "RX" },
+        { name: "Aisha Khan", division: "Masters 35+" },
       ],
       teams: [
         { name: "Team Alpha", division: "RX", members: ["Sam Carter", "Aisha Khan"] },
         { name: "Team Beta", division: "Scaled", members: ["Jess Morgan", "Mike Patel"] },
       ],
 
-      // Workouts (dummy detailed specs)
       workouts: [
         {
           id: "w1",
           name: "Qualifier 1 — Engine",
-          divisionNotes: "All divisions",
-          scoreType: "time", // time | reps | load | points
-          sort: "asc", // asc for time, desc for reps/load/points
+          divisionNotes: "All divisions (scaled options below)",
+          scoreType: "time",
+          sort: "asc",
           unit: "sec",
           cap: "12:00",
           tiebreak: "Split time at round 6",
-          equipment: ["Row erg", "Pull-up bar", "Kettlebell (24/16)"],
+          equipment: ["Row erg", "Pull-up bar", "Kettlebell"],
           standards: [
             "Row for calories shown on monitor",
-            "Chest-to-bar for RX / Pull-ups for Scaled",
+            "Pulling standard: chin over bar or chest-to-bar per division",
             "KB swings overhead (American) – arms locked out",
           ],
           description:
-            "For time: 30/24 cal row, 30 C2B (or pull-ups), 60 KB swings (24/16).",
+            "For time: 30/24 cal row, 30 pull-ups / C2B (per division), 60 KB swings (per division load).",
           media: { demoVideoUrl: "", scorecardUrl: "" },
-          liveWindow: defaultWindow(2, 72), // opens in 2 hours for 3 days
+          liveWindow: defaultWindow(2, 72),
+          scalingByDivision: {
+            RX: {
+              equipment: ["Row erg", "Pull-up bar", "KB 24/16"],
+              standards: ["Chest-to-bar", "KB 24/16"],
+              description:
+                "RX: 30/24 cal row, 30 C2B, 60 American KB swings (24/16).",
+            },
+            "Masters 35+": {
+              equipment: ["Row erg", "Pull-up bar", "KB 20/12"],
+              standards: ["Chest-to-bar OR pull-ups allowed (masters)", "KB 20/12"],
+              description:
+                "Masters: 30/24 cal row, 30 pull-ups (or C2B), 60 American KB swings (20/12).",
+            },
+            Intermediate: {
+              equipment: ["Row erg", "Pull-up bar", "KB 20/12"],
+              standards: ["Pull-ups", "KB 20/12"],
+              description:
+                "Intermediate: 30/24 cal row, 30 pull-ups, 60 American KB swings (20/12).",
+            },
+            Scaled: {
+              equipment: ["Row erg", "Pull-up bar", "KB 16/12"],
+              standards: ["Jumping pull-ups allowed", "KB 16/12"],
+              description:
+                "Scaled: 30/24 cal row, 30 jumping pull-ups, 60 American KB swings (16/12).",
+            },
+          },
         },
         {
           id: "w2",
           name: "Qualifier 2 — AMRAP",
-          divisionNotes: "Scaled uses lighter DB",
+          divisionNotes: "Scaled uses lighter DB + step-overs",
           scoreType: "reps",
           sort: "desc",
           unit: "reps",
           cap: "15:00",
           tiebreak: "Time to finish round 5",
-          equipment: ["Dumbbells (22.5/15)", "Box (24/20)", "Floor space"],
+          equipment: ["Dumbbells", "Box", "Floor space"],
           standards: [
             "DB snatch: one head touches floor each rep",
-            "Box jump overs: two-foot takeoff, face box optional",
+            "Box jump overs: two-foot takeoff (unless scaled option)",
             "Burpee over DB: chest + thighs touch floor",
           ],
           description:
             "AMRAP 15: 10 DB snatch, 12 box jump overs, 14 burpee over DB.",
           media: { demoVideoUrl: "", scorecardUrl: "" },
           liveWindow: defaultWindow(2, 72),
+          scalingByDivision: {
+            RX: { equipment: ["DB 22.5/15", "Box 24/20"], standards: ["DB 22.5/15", "BJO 24/20"] },
+            Intermediate: { equipment: ["DB 20/12.5", "Box 24/20"], standards: ["DB 20/12.5"] },
+            "Masters 35+": { equipment: ["DB 20/12.5", "Box 20/18"], standards: ["Lower box option 20/18"] },
+            Scaled: {
+              equipment: ["DB 15/10", "Box 20/18"],
+              standards: ["Box step-over allowed", "DB 15/10"],
+              description:
+                "Scaled: AMRAP 15 — 10 DB snatch (15/10), 12 box step-overs (20/18), 14 burpee over DB.",
+            },
+          },
         },
         {
           id: "w3",
@@ -223,31 +271,25 @@ const DEFAULT_DATA = {
             "Video must show plates clearly",
           ],
           description:
-            "Build to a heavy complex (1 clean + 1 jerk) within 10 minutes.",
+            "Build to a heavy complex within 10 minutes (division dependent).",
           media: { demoVideoUrl: "", scorecardUrl: "" },
           liveWindow: defaultWindow(2, 72),
+          scalingByDivision: {
+            RX: { description: "RX: build to heavy (1 clean + 1 jerk)." },
+            Intermediate: { description: "Intermediate: build to heavy single clean." },
+            "Masters 35+": { description: "Masters: build to heavy single clean." },
+            Scaled: { description: "Scaled: build to heavy single clean (technique focus)." },
+          },
         },
       ],
 
-      // Online submissions from athletes/teams:
-      // submissions[workoutId][participant] = { value, videoUrl, notes, submittedAt, status, judgeNote }
-      // status: "submitted" | "needs_change" | "withdrawn"
-      submissions: {},
+      submissions: {}, // submissions[workoutId][participant]
+      adjustments: [], // awaiting head judge etc
+      finalScores: {}, // finalScores[workoutId][participant]
 
-      // Judge adjustments awaiting head judge confirmation:
-      // adjustments = [{ id, workoutId, participant, originalValue, adjustedValue, judgeName, judgeNote, adjustedAt, status }]
-      // status: "awaiting_head_judge" | "rejected" | "confirmed"
-      adjustments: [],
-
-      // Final confirmed scores:
-      // finalScores[workoutId][participant] = { value, confirmedBy, confirmedAt, note }
-      finalScores: {},
-
-      // Staff identity (demo)
       judgePool: ["Jordan Lee", "Taylor Price", "Charlie Scott"],
       headJudgePool: ["Harper Adams"],
 
-      // Audit
       audit: [],
     },
   ],
@@ -520,6 +562,34 @@ export default function App() {
     return map;
   }, [currentComp]);
 
+  const compDivisions = useMemo(() => {
+    const c = currentComp;
+    if (!c) return [];
+    const set = new Set();
+    (c.divisions || []).forEach((d) => set.add(d));
+    // also include any division found on participants
+    for (const [, meta] of participantMeta.entries()) {
+      if (meta.division) set.add(meta.division);
+    }
+    return Array.from(set);
+  }, [currentComp, participantMeta]);
+
+  // Workout scaling merge
+  function workoutForDivision(workout, division) {
+    const scaled = workout?.scalingByDivision?.[division];
+    if (!scaled) return workout;
+    return {
+      ...workout,
+      ...scaled,
+      // If scaled overrides equipment/standards, ensure arrays
+      equipment: Array.isArray(scaled.equipment) ? scaled.equipment : workout.equipment,
+      standards: Array.isArray(scaled.standards) ? scaled.standards : workout.standards,
+      // allow unit/cap overrides if present
+      unit: scaled.unit || workout.unit,
+      cap: scaled.cap || workout.cap,
+    };
+  }
+
   // Workout live logic
   function workoutIsLive(w) {
     const open = w.liveWindow?.openAt ? new Date(w.liveWindow.openAt).getTime() : null;
@@ -539,18 +609,18 @@ export default function App() {
     return "Not live";
   }
 
-  // Permissions
   const submissionsClosed = data.settings.submissionsClosed;
   const leaderboardHidden = data.settings.hideLeaderboard;
 
   const finalOnly = data.settings.finalOnlyLeaderboard;
   const staffCanSeeProvisional = data.settings.allowProvisionalForStaff;
 
-  // ================================
-  // Athlete submissions
-  // ================================
+  /* ================================
+     Athlete submissions
+  ================================ */
   const [athleteView, setAthleteView] = useState("workouts"); // workouts | submit | leaderboard | my_submissions
   const [mySelection, setMySelection] = useState(() => participantList[0] || "");
+  const [lbDivision, setLbDivision] = useState("Overall"); // Overall or division
 
   useEffect(() => {
     if (!participantList.includes(mySelection)) {
@@ -558,6 +628,12 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, data.ui.compId, participantList.join("|")]);
+
+  // Keep lbDivision valid
+  useEffect(() => {
+    const opts = ["Overall", ...compDivisions];
+    if (!opts.includes(lbDivision)) setLbDivision("Overall");
+  }, [compDivisions, lbDivision]);
 
   const [submitDraft, setSubmitDraft] = useState({
     workoutId: "",
@@ -580,10 +656,19 @@ export default function App() {
       return;
     }
 
-    const w = comp.workouts.find((x) => x.id === submitDraft.workoutId);
-    if (!w) return;
+    const wBase = comp.workouts.find((x) => x.id === submitDraft.workoutId);
+    if (!wBase) return;
 
-    if (!workoutIsLive(w)) {
+    const participant = mySelection;
+    if (!participant) {
+      showToast("warn", "Select an athlete/team.");
+      return;
+    }
+
+    const division = participantMeta.get(participant)?.division || "";
+    const w = workoutForDivision(wBase, division);
+
+    if (!workoutIsLive(wBase)) {
       showToast("warn", "This workout is not live right now.");
       return;
     }
@@ -594,33 +679,28 @@ export default function App() {
       return;
     }
 
-    const participant = mySelection;
-    if (!participant) {
-      showToast("warn", "Select an athlete/team.");
-      return;
-    }
-
     updateComp(comp.id, (c) => {
       c.submissions = c.submissions || {};
-      c.submissions[w.id] = c.submissions[w.id] || {};
-      c.submissions[w.id][participant] = {
+      c.submissions[wBase.id] = c.submissions[wBase.id] || {};
+      c.submissions[wBase.id][participant] = {
         value: n,
         videoUrl: submitDraft.videoUrl || "",
         notes: submitDraft.notes || "",
         submittedAt: new Date().toISOString(),
         status: "submitted",
         judgeNote: "",
+        division,
       };
       return c;
     });
 
-    addAudit(`Online submission: ${participant} submitted ${n} for ${w.name}`);
+    addAudit(`Online submission: ${participant} (${division}) submitted ${n} for ${w.name}`);
     showToast("ok", "Submitted! Judge will review.");
   }
 
-  // ================================
-  // Judge review & adjust
-  // ================================
+  /* ================================
+     Judge review & adjust
+  ================================ */
   const [judgeView, setJudgeView] = useState("review"); // review | adjusted_queue | leaderboard
   const [judgeName, setJudgeName] = useState(() => currentComp?.judgePool?.[0] || "Judge");
 
@@ -640,7 +720,7 @@ export default function App() {
           workoutId: w.id,
           workoutName: w.name,
           participant,
-          division: participantMeta.get(participant)?.division || "",
+          division: s.division || participantMeta.get(participant)?.division || "",
           value: s.value,
           videoUrl: s.videoUrl,
           notes: s.notes,
@@ -650,17 +730,17 @@ export default function App() {
         });
       }
     }
-    // newest first
     rows.sort((a, b) => String(b.submittedAt || "").localeCompare(String(a.submittedAt || "")));
     return rows;
   }, [currentComp, participantMeta]);
 
-  const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted" });
+  const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted", division: "all" });
   const judgeFiltered = useMemo(() => {
     const q = normaliseStr(judgeFilter.q);
     return submissionsFlat.filter((r) => {
       if (judgeFilter.workoutId !== "all" && r.workoutId !== judgeFilter.workoutId) return false;
       if (judgeFilter.status !== "all" && r.status !== judgeFilter.status) return false;
+      if (judgeFilter.division !== "all" && r.division !== judgeFilter.division) return false;
       if (q) {
         const blob = `${r.participant} ${r.workoutName} ${r.division} ${r.notes}`.toLowerCase();
         if (!blob.includes(q)) return false;
@@ -694,7 +774,6 @@ export default function App() {
     const w = c.workouts.find((x) => x.id === adjustDraft.workoutId);
     if (!w) return;
 
-    // Find original submission
     const original = c.submissions?.[w.id]?.[adjustDraft.participant];
     if (!original) {
       showToast("warn", "Original submission not found.");
@@ -708,7 +787,7 @@ export default function App() {
         workoutId: w.id,
         workoutName: w.name,
         participant: adjustDraft.participant,
-        division: participantMeta.get(adjustDraft.participant)?.division || "",
+        division: original.division || participantMeta.get(adjustDraft.participant)?.division || "",
         originalValue: original.value,
         adjustedValue: n,
         judgeName: judgeName || "Judge",
@@ -717,7 +796,6 @@ export default function App() {
         status: "awaiting_head_judge",
       });
 
-      // mark submission as reviewed/needs_change if changed drastically? keep simple: if judge note requests changes, mark needs_change
       draft.submissions = draft.submissions || {};
       draft.submissions[w.id] = draft.submissions[w.id] || {};
       draft.submissions[w.id][adjustDraft.participant] = {
@@ -729,14 +807,16 @@ export default function App() {
       return draft;
     });
 
-    addAudit(`Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`);
+    addAudit(
+      `Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`
+    );
     showToast("ok", "Adjustment sent to Head Judge.");
     setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
   }
 
-  // ================================
-  // Head Judge confirm adjustments
-  // ================================
+  /* ================================
+     Head Judge confirm adjustments
+  ================================ */
   const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | leaderboard | audit
   const [headJudgeName, setHeadJudgeName] = useState(() => currentComp?.headJudgePool?.[0] || "Head Judge");
 
@@ -765,16 +845,18 @@ export default function App() {
         confirmedBy: headJudgeName || "Head Judge",
         confirmedAt: new Date().toISOString(),
         note: adj.judgeNote || "",
+        division: adj.division || "",
       };
 
-      // mark adjustment confirmed
       const item = (draft.adjustments || []).find((x) => x.id === adjId);
       if (item) item.status = "confirmed";
 
       return draft;
     });
 
-    addAudit(`Head Judge confirmed adjustment for ${adj.participant} on ${adj.workoutName}: final=${adj.adjustedValue}`);
+    addAudit(
+      `Head Judge confirmed adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: final=${adj.adjustedValue}`
+    );
     showToast("ok", "Confirmed -> Final score updated.");
   }
 
@@ -786,14 +868,12 @@ export default function App() {
     if (!adj) return;
 
     updateComp(c.id, (draft) => {
-      // mark adjustment rejected
       const item = (draft.adjustments || []).find((x) => x.id === adjId);
       if (item) {
         item.status = "rejected";
         item.headJudgeNote = reason || "Rejected";
       }
 
-      // mark original submission needs_change so athlete can resubmit
       draft.submissions = draft.submissions || {};
       draft.submissions[adj.workoutId] = draft.submissions[adj.workoutId] || {};
       const sub = draft.submissions[adj.workoutId][adj.participant];
@@ -805,40 +885,41 @@ export default function App() {
       return draft;
     });
 
-    addAudit(`Head Judge rejected adjustment for ${adj.participant} on ${adj.workoutName}: ${reason || "no note"}`);
+    addAudit(
+      `Head Judge rejected adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: ${reason || "no note"}`
+    );
     showToast("ok", "Rejected (athlete marked needs change).");
   }
 
-  // ================================
-  // Leaderboard (provisional vs final)
-  // ================================
+  /* ================================
+     Leaderboard (division tabs + 0s)
+================================ */
   const leaderboard = useMemo(() => {
     const c = currentComp;
     if (!c) return [];
 
-    // Determine what the viewer is allowed to see
     const privileged = isStaff && staffCanSeeProvisional;
     const showProvisional = !finalOnly || privileged;
 
-    // Build per workout effective score
+    // Base participants list (so everyone appears with 0s)
+    const participants =
+      mode === "athlete"
+        ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division }))
+        : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
+
     const rows = new Map();
+    participants.forEach((p) => {
+      rows.set(p.name, { name: p.name, division: p.division || "", total: 0, per: {} });
+    });
 
-    function add(name, division, workoutId, scoreObj, sourceLabel) {
-      if (!rows.has(name)) rows.set(name, { name, division, total: 0, per: {}, sources: {} });
-      const r = rows.get(name);
-      r.per[workoutId] = scoreObj;
-      r.sources[workoutId] = sourceLabel;
-      r.total += Number(scoreObj.value || 0);
-    }
-
-    // For each workout, choose:
-    // 1) finalScores if present
-    // 2) else if showProvisional: use latest awaiting adjustment (adjustedValue) if exists
-    // 3) else if showProvisional: use athlete submission value
+    // For each workout, choose effective score per participant:
+    // - finalScores (best)
+    // - else (if showProvisional) awaiting adjustment (adjustedValue)
+    // - else (if showProvisional) submission value
+    // - else missing => 0
     for (const w of c.workouts || []) {
       const finals = c.finalScores?.[w.id] || {};
 
-      // index adjustments by participant (latest awaiting)
       const awaiting = (c.adjustments || [])
         .filter((a) => a.workoutId === w.id && a.status === "awaiting_head_judge")
         .sort((a, b) => String(b.adjustedAt || "").localeCompare(String(a.adjustedAt || "")));
@@ -849,33 +930,46 @@ export default function App() {
 
       const subs = c.submissions?.[w.id] || {};
 
-      // Participants depend on mode
-      const participants = mode === "athlete" ? (c.athletes || []).map((a) => a.name) : (c.teams || []).map((t) => t.name);
-
       for (const p of participants) {
-        const div = participantMeta.get(p)?.division || "";
-        if (finals[p]) {
-          add(p, div, w.id, { value: finals[p].value, unit: w.unit, status: "FINAL" }, "final");
-        } else if (showProvisional && awaitingBy.get(p)) {
-          const a = awaitingBy.get(p);
-          add(p, div, w.id, { value: a.adjustedValue, unit: w.unit, status: "ADJUSTED (awaiting HJ)" }, "adjusted");
-        } else if (showProvisional && subs[p] && subs[p].status !== "withdrawn") {
-          add(p, div, w.id, { value: subs[p].value, unit: w.unit, status: subs[p].status }, "submission");
+        const r = rows.get(p.name);
+        if (!r) continue;
+
+        let value = 0;
+        let status = "0";
+        if (finals[p.name]) {
+          value = Number(finals[p.name].value || 0);
+          status = "FINAL";
+        } else if (showProvisional && awaitingBy.get(p.name)) {
+          const a = awaitingBy.get(p.name);
+          value = Number(a.adjustedValue || 0);
+          status = "ADJUSTED";
+        } else if (showProvisional && subs[p.name] && subs[p.name].status !== "withdrawn") {
+          value = Number(subs[p.name].value || 0);
+          status = subs[p.name].status || "submitted";
         } else {
-          // no score
+          value = 0;
+          status = "0";
         }
+
+        r.per[w.id] = { value, unit: w.unit, status };
+        r.total += value;
       }
     }
 
     const arr = Array.from(rows.values());
     arr.sort((a, b) => b.total - a.total);
     return arr;
-  }, [currentComp, mode, participantMeta, isStaff, staffCanSeeProvisional, finalOnly]);
+  }, [currentComp, mode, isStaff, staffCanSeeProvisional, finalOnly]);
 
-  // ================================
-  // Organiser: workout builder & scheduling
-  // ================================
-  const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | leaderboard_controls | audit
+  const leaderboardFiltered = useMemo(() => {
+    if (lbDivision === "Overall") return leaderboard;
+    return leaderboard.filter((r) => r.division === lbDivision);
+  }, [leaderboard, lbDivision]);
+
+  /* ================================
+     Organiser: workouts + scaling editor + scheduling
+================================ */
+  const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | controls | audit
   const [workoutEditor, setWorkoutEditor] = useState(null); // {mode, draft}
 
   function openNewWorkout() {
@@ -895,6 +989,7 @@ export default function App() {
         description: "",
         media: { demoVideoUrl: "", scorecardUrl: "" },
         liveWindow: defaultWindow(1, 72),
+        scalingByDivision: {},
       },
     });
   }
@@ -911,11 +1006,12 @@ export default function App() {
       const idx = c.workouts.findIndex((x) => x.id === draftWorkout.id);
       if (idx >= 0) c.workouts[idx] = draftWorkout;
       else c.workouts.push(draftWorkout);
-      // Ensure submission buckets exist
+
       c.submissions = c.submissions || {};
       c.submissions[draftWorkout.id] = c.submissions[draftWorkout.id] || {};
       c.finalScores = c.finalScores || {};
       c.finalScores[draftWorkout.id] = c.finalScores[draftWorkout.id] || {};
+
       return c;
     });
 
@@ -936,22 +1032,17 @@ export default function App() {
     showToast("ok", "Workout deleted.");
   }
 
-  // ================================
-  // UI: header & tabs
-  // ================================
+  /* ================================
+     UI: header & tabs
+================================ */
   const tab = data.ui.tab;
-
-  function roleHomeTab() {
-    // Simple: keep all tabs available, but competition is primary
-    return tab;
-  }
 
   const Header = () => (
     <div style={S.headerRow}>
       <div>
-        <div style={S.title}>Throwdown Hub — Role‑based Demo</div>
+        <div style={S.title}>Throwdown Hub — Role‑based Demo (Divisions + Scaling)</div>
         <div style={S.subTitle}>
-          Athletes submit → Judges adjust → Head Judge confirms → Organiser controls workouts + live windows (single file)
+          Athletes submit → Judges adjust → Head Judge confirms → Organiser controls workouts + scaling + live windows
         </div>
       </div>
 
@@ -1000,13 +1091,13 @@ export default function App() {
 
   const Tabs = () => (
     <div style={{ ...S.row, marginTop: 12 }}>
-      <Button variant={roleHomeTab() === "competition" ? "primary" : "default"} onClick={() => setTab("competition")}>
+      <Button variant={tab === "competition" ? "primary" : "default"} onClick={() => setTab("competition")}>
         Competition
       </Button>
-      <Button variant={roleHomeTab() === "directory" ? "primary" : "default"} onClick={() => setTab("directory")}>
+      <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")}>
         Directory (lite)
       </Button>
-      <Button variant={roleHomeTab() === "admin" ? "primary" : "default"} onClick={() => setTab("admin")}>
+      <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")}>
         Settings / Admin
       </Button>
     </div>
@@ -1042,7 +1133,7 @@ export default function App() {
       <div style={{ ...S.row, marginTop: 14 }}>
         <div style={{ flex: "1 1 760px", ...S.card }}>
           <div style={{ fontSize: 18, fontWeight: 900 }}>Events Directory (lite)</div>
-          <div style={S.muted}>You can drop your full calendar/list directory back in here — this demo focuses on the qualifier workflow.</div>
+          <div style={S.muted}>Qualifier workflow demo. You can reinsert your full calendar/list directory here.</div>
           <div style={S.divider} />
           {evt ? (
             <div style={S.card}>
@@ -1165,9 +1256,11 @@ export default function App() {
      ROLE: Athlete / Team Manager
 ================================ */
   function AthleteTeamView() {
+    const myDivision = participantMeta.get(mySelection)?.division || "";
+
     const mySubs = useMemo(() => {
       const c = currentComp;
-      if (!c) return [];
+      if (!c || !mySelection) return [];
       const rows = [];
       for (const w of c.workouts || []) {
         const s = c.submissions?.[w.id]?.[mySelection];
@@ -1201,12 +1294,13 @@ export default function App() {
 
         <div style={S.divider} />
 
-        {athleteView === "workouts" ? <WorkoutsList /> : null}
+        {athleteView === "workouts" ? <WorkoutsList division={myDivision} /> : null}
+
         {athleteView === "submit" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Submit an online score</div>
             <div style={{ ...S.muted, marginTop: 6 }}>
-              You can only submit while the workout is LIVE and submissions are open.
+              You can only submit while the workout is LIVE and submissions are open. Your division: <strong>{myDivision || "—"}</strong>
             </div>
 
             <div style={S.divider} />
@@ -1265,17 +1359,10 @@ export default function App() {
                 </div>
 
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Button
-                    variant="primary"
-                    onClick={submitOnlineScore}
-                    disabled={!mySelection || !submitDraft.workoutId}
-                    title={submissionsClosed ? "Submissions are closed by organiser" : ""}
-                  >
+                  <Button variant="primary" onClick={submitOnlineScore} disabled={!mySelection || !submitDraft.workoutId}>
                     Submit
                   </Button>
-                  <Button
-                    onClick={() => setSubmitDraft((d) => ({ ...d, value: String(Math.floor(Math.random() * 300) + 1) }))}
-                  >
+                  <Button onClick={() => setSubmitDraft((d) => ({ ...d, value: String(Math.floor(Math.random() * 300) + 1) }))}>
                     Random demo score
                   </Button>
                 </div>
@@ -1303,11 +1390,16 @@ export default function App() {
                   </div>
                   <div style={{ height: 8 }} />
                   <div style={{ fontWeight: 900 }}>Score: {s.value}</div>
+
                   {s.videoUrl ? (
                     <div style={{ ...S.muted, marginTop: 6 }}>
-                      Video: <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#9fd2ff" }}>Open</a>
+                      Video:{" "}
+                      <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#a7d7ff" }}>
+                        Open
+                      </a>
                     </div>
                   ) : null}
+
                   {s.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: “{s.judgeNote}”</div> : null}
                   {s.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Your note: “{s.notes}”</div> : null}
                 </div>
@@ -1371,23 +1463,36 @@ export default function App() {
                   placeholder="participant, workout…"
                 />
               </Field>
+
               <Field label="Workout">
+                {/* FIXED: closes the array properly */}
                 <Select
                   value={judgeFilter.workoutId}
                   onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
-                  options={["all", ...(currentComp.workouts || []).map((w) => w.id)}
+                  options={["all", ...(currentComp.workouts || []).map((w) => w.id)]}
                   style={{ width: 240 }}
                 />
               </Field>
+
+              <Field label="Division">
+                <Select
+                  value={judgeFilter.division}
+                  onChange={(v) => setJudgeFilter((f) => ({ ...f, division: v }))}
+                  options={["all", ...compDivisions]}
+                  style={{ width: 200 }}
+                />
+              </Field>
+
               <Field label="Status">
                 <Select
                   value={judgeFilter.status}
                   onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
                   options={["all", "submitted", "needs_change"]}
-                  style={{ width: 200 }}
+                  style={{ width: 180 }}
                 />
               </Field>
-              <Button onClick={() => setJudgeFilter({ q: "", workoutId: "all", status: "submitted" })} style={{ marginLeft: "auto" }}>
+
+              <Button onClick={() => setJudgeFilter({ q: "", workoutId: "all", status: "submitted", division: "all" })} style={{ marginLeft: "auto" }}>
                 Clear
               </Button>
             </div>
@@ -1409,18 +1514,23 @@ export default function App() {
 
                   <div style={{ height: 8 }} />
                   <div style={{ fontWeight: 900 }}>Submitted score: {r.value}</div>
+
                   {r.videoUrl ? (
                     <div style={{ ...S.muted, marginTop: 6 }}>
-                      Video: <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#9fd2ff" }}>Open</a>
+                      Video:{" "}
+                      <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#a7d7ff" }}>
+                        Open
+                      </a>
                     </div>
                   ) : null}
+
                   {r.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Athlete note: “{r.notes}”</div> : null}
                   {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Previous judge note: “{r.judgeNote}”</div> : null}
 
                   <div style={S.divider} />
 
                   <Button variant="primary" onClick={() => startAdjust(r)}>
-                    Adjust / Confirm for Head Judge
+                    Adjust / Send to Head Judge
                   </Button>
                 </div>
               ))}
@@ -1457,7 +1567,7 @@ export default function App() {
                       style={S.input}
                       value={adjustDraft.note}
                       onChange={(e) => setAdjustDraft((d) => ({ ...d, note: e.target.value }))}
-                      placeholder="e.g. 2 no-reps on box jumps"
+                      placeholder="e.g. 2 no-reps"
                     />
                   </Field>
                 </div>
@@ -1487,7 +1597,7 @@ export default function App() {
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                     <div>
                       <div style={{ fontWeight: 900 }}>{a.participant}</div>
-                      <div style={S.muted}>{a.workoutName} • {prettyDateTime(a.adjustedAt)}</div>
+                      <div style={S.muted}>{a.workoutName} • {a.division || "—"} • {prettyDateTime(a.adjustedAt)}</div>
                     </div>
                     <span style={S.tag}>{a.status}</span>
                   </div>
@@ -1556,7 +1666,7 @@ export default function App() {
                     <div>
                       <div style={{ fontWeight: 900 }}>{a.participant}</div>
                       <div style={S.muted}>
-                        {a.workoutName} • Judge: <strong>{a.judgeName}</strong> • {prettyDateTime(a.adjustedAt)}
+                        {a.workoutName} • {a.division || "—"} • Judge: <strong>{a.judgeName}</strong> • {prettyDateTime(a.adjustedAt)}
                       </div>
                     </div>
                     <span style={S.tag}>awaiting</span>
@@ -1635,12 +1745,12 @@ export default function App() {
       <div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <Button variant={orgView === "workouts" ? "primary" : "default"} onClick={() => setOrgView("workouts")}>
-            Workouts
+            Workouts + Scaling
           </Button>
           <Button variant={orgView === "schedule" ? "primary" : "default"} onClick={() => setOrgView("schedule")}>
             Scheduling
           </Button>
-          <Button variant={orgView === "leaderboard_controls" ? "primary" : "default"} onClick={() => setOrgView("leaderboard_controls")}>
+          <Button variant={orgView === "controls" ? "primary" : "default"} onClick={() => setOrgView("controls")}>
             Controls
           </Button>
           <Button variant={orgView === "audit" ? "primary" : "default"} onClick={() => setOrgView("audit")}>
@@ -1656,8 +1766,8 @@ export default function App() {
 
         {orgView === "workouts" ? (
           <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout builder</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Edit workout details (standards/equipment/description) and scoring rules.</div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout builder + scaling</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Edit base workout + per-division overrides (scaling).</div>
 
             <div style={S.divider} />
 
@@ -1675,6 +1785,7 @@ export default function App() {
                   <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <span style={S.tag}>sort: {w.sort}</span>
                     <span style={S.tag}>unit: {w.unit}</span>
+                    <span style={S.tag}>scales: {Object.keys(w.scalingByDivision || {}).length}</span>
                   </div>
 
                   <div style={S.divider} />
@@ -1699,6 +1810,7 @@ export default function App() {
                 editor={workoutEditor}
                 onClose={() => setWorkoutEditor(null)}
                 onSave={saveWorkout}
+                divisions={compDivisions}
               />
             ) : null}
           </div>
@@ -1707,7 +1819,7 @@ export default function App() {
         {orgView === "schedule" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (uses browser local time). Athletes can only submit while LIVE.</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time).</div>
 
             <div style={S.divider} />
 
@@ -1759,10 +1871,10 @@ export default function App() {
           </div>
         ) : null}
 
-        {orgView === "leaderboard_controls" ? (
+        {orgView === "controls" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, choose final-only visibility.</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, final-only visibility.</div>
 
             <div style={S.divider} />
 
@@ -1793,32 +1905,33 @@ export default function App() {
                   checked={data.settings.allowProvisionalForStaff}
                   onChange={() => toggleSetting("allowProvisionalForStaff")}
                   label="Allow provisional for staff"
-                  hint="Judges/Head Judge/Organiser can still see provisional when final-only is ON."
+                  hint="Staff can still see provisional when final-only is ON."
                 />
               </div>
 
               <div style={{ ...S.card, padding: 12 }}>
                 <div style={{ fontWeight: 900 }}>Quick demo actions</div>
-                <div style={{ ...S.muted, marginTop: 6 }}>Use these to populate data fast for screenshots.</div>
+                <div style={{ ...S.muted, marginTop: 6 }}>Populate data fast for screenshots.</div>
                 <div style={{ height: 10 }} />
                 <Button
                   variant="primary"
                   onClick={() => {
-                    // Create random submissions for all participants for workout 1
                     const w = currentComp.workouts?.[0];
                     if (!w) return;
                     updateComp(currentComp.id, (c) => {
                       c.submissions = c.submissions || {};
                       c.submissions[w.id] = c.submissions[w.id] || {};
-                      const participants = mode === "athlete" ? (c.athletes || []).map((a) => a.name) : (c.teams || []).map((t) => t.name);
+                      const participants =
+                        mode === "athlete" ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division })) : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
                       participants.forEach((p) => {
-                        c.submissions[w.id][p] = {
+                        c.submissions[w.id][p.name] = {
                           value: Math.floor(Math.random() * 300) + 1,
                           videoUrl: "",
                           notes: "Auto-generated demo submission",
                           submittedAt: new Date().toISOString(),
                           status: "submitted",
                           judgeNote: "",
+                          division: p.division,
                         };
                       });
                       return c;
@@ -1832,7 +1945,6 @@ export default function App() {
                 <div style={{ height: 10 }} />
                 <Button
                   onClick={() => {
-                    // Clear all submissions/adjustments/finals
                     updateComp(currentComp.id, (c) => {
                       c.submissions = {};
                       c.adjustments = [];
@@ -1883,57 +1995,65 @@ export default function App() {
   /* ================================
      Common panels
 ================================ */
-  function WorkoutsList({ readOnly = false }) {
+  function WorkoutsList({ readOnly = false, division = "" }) {
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
-        {(currentComp.workouts || []).map((w) => (
-          <div key={w.id} style={{ ...S.card, padding: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>{w.name}</div>
-                <div style={S.muted}>
-                  {w.scoreType} • cap {w.cap} • <strong>{workoutLiveLabel(w)}</strong>
+        {(currentComp.workouts || []).map((wBase) => {
+          const w = division ? workoutForDivision(wBase, division) : wBase;
+          const scaled = !!(division && wBase.scalingByDivision?.[division]);
+          return (
+            <div key={wBase.id} style={{ ...S.card, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: 15 }}>{w.name}</div>
+                  <div style={S.muted}>
+                    {w.scoreType} • cap {w.cap} • <strong>{workoutLiveLabel(wBase)}</strong>
+                    {division ? ` • division: ${division}` : ""}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {scaled ? <span style={S.tag}>SCALED</span> : null}
+                  <span style={S.tag}>{w.unit}</span>
                 </div>
               </div>
-              <span style={S.tag}>{w.unit}</span>
-            </div>
 
-            <div style={{ height: 10 }} />
-            <div style={{ fontWeight: 900 }}>Description</div>
-            <div style={{ ...S.muted, marginTop: 4 }}>{w.description || "—"}</div>
+              <div style={{ height: 10 }} />
+              <div style={{ fontWeight: 900 }}>Description</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>{w.description || "—"}</div>
 
-            <div style={{ height: 10 }} />
-            <div style={{ fontWeight: 900 }}>Standards</div>
-            <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18, opacity: 0.92 }}>
-              {(w.standards || []).slice(0, 6).map((s, i) => (
-                <li key={i} style={{ fontSize: 13, marginBottom: 4 }}>{s}</li>
-              ))}
-              {(w.standards || []).length === 0 ? <li style={{ fontSize: 13, opacity: 0.7 }}>—</li> : null}
-            </ul>
+              <div style={{ height: 10 }} />
+              <div style={{ fontWeight: 900 }}>Standards</div>
+              <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18, opacity: 0.92 }}>
+                {(w.standards || []).slice(0, 8).map((s, i) => (
+                  <li key={i} style={{ fontSize: 13, marginBottom: 4 }}>{s}</li>
+                ))}
+                {(w.standards || []).length === 0 ? <li style={{ fontSize: 13, opacity: 0.7 }}>—</li> : null}
+              </ul>
 
-            <div style={{ height: 10 }} />
-            <div style={{ fontWeight: 900 }}>Equipment</div>
-            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {(w.equipment || []).slice(0, 10).map((e) => (
-                <span key={e} style={S.tag}>{e}</span>
-              ))}
-              {(w.equipment || []).length === 0 ? <span style={S.tag}>—</span> : null}
-            </div>
-
-            <div style={S.divider} />
-            <div style={S.muted}>
-              Opens: <strong>{prettyDateTime(w.liveWindow?.openAt)}</strong><br />
-              Closes: <strong>{prettyDateTime(w.liveWindow?.closeAt)}</strong><br />
-              Tiebreak: <strong>{w.tiebreak || "—"}</strong>
-            </div>
-
-            {!readOnly && isAthleteSide ? (
-              <div style={{ marginTop: 10, ...S.muted }}>
-                Tip: go to <strong>Submit Score</strong> to enter your result.
+              <div style={{ height: 10 }} />
+              <div style={{ fontWeight: 900 }}>Equipment</div>
+              <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {(w.equipment || []).slice(0, 12).map((e) => (
+                  <span key={e} style={S.tag}>{e}</span>
+                ))}
+                {(w.equipment || []).length === 0 ? <span style={S.tag}>—</span> : null}
               </div>
-            ) : null}
-          </div>
-        ))}
+
+              <div style={S.divider} />
+              <div style={S.muted}>
+                Opens: <strong>{prettyDateTime(wBase.liveWindow?.openAt)}</strong><br />
+                Closes: <strong>{prettyDateTime(wBase.liveWindow?.closeAt)}</strong><br />
+                Tiebreak: <strong>{w.tiebreak || "—"}</strong>
+              </div>
+
+              {!readOnly && isAthleteSide ? (
+                <div style={{ marginTop: 10, ...S.muted }}>
+                  Tip: go to <strong>Submit Score</strong> to enter your result.
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -1951,12 +2071,26 @@ export default function App() {
     const privileged = isStaff && staffCanSeeProvisional;
     const showProvisional = !finalOnly || privileged;
 
+    const divisionOptions = ["Overall", ...compDivisions];
+
     return (
       <div>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 15, fontWeight: 900 }}>Leaderboard ({showProvisional ? "Provisional" : "Final-only"})</div>
+          <div style={{ fontSize: 15, fontWeight: 900 }}>
+            Leaderboard ({showProvisional ? "Provisional" : "Final-only"}) • Mode: {mode}
+          </div>
           <div style={S.muted}>
-            {finalOnly && !privileged ? "You are viewing FINAL confirmed scores only." : "Includes submissions/adjustments where applicable."}
+            {finalOnly && !privileged ? "You are viewing FINAL confirmed scores only." : "Includes provisional where applicable."}
+          </div>
+        </div>
+
+        <div style={{ ...S.row, marginTop: 10, alignItems: "center" }}>
+          <div style={S.pill}>
+            <strong>Division</strong>
+            <Select value={lbDivision} onChange={setLbDivision} options={divisionOptions} style={{ padding: "6px 8px", borderRadius: 999 }} />
+          </div>
+          <div style={{ ...S.muted, marginLeft: "auto" }}>
+            Showing <strong>{leaderboardFiltered.length}</strong> entries • Missing scores display as <strong>0</strong>
           </div>
         </div>
 
@@ -1976,7 +2110,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {leaderboard.map((r, idx) => (
+              {leaderboardFiltered.map((r, idx) => (
                 <tr key={r.name}>
                   <td style={S.td}><div style={{ fontWeight: 900 }}>{idx + 1}</div></td>
                   <td style={S.td}><div style={{ fontWeight: 900 }}>{r.name}</div></td>
@@ -1986,24 +2120,18 @@ export default function App() {
                     const s = r.per[w.id];
                     return (
                       <td key={w.id} style={S.td}>
-                        {s ? (
-                          <>
-                            <div style={{ fontWeight: 900 }}>{s.value} {w.unit}</div>
-                            <div style={S.muted}>{s.status}</div>
-                          </>
-                        ) : (
-                          <div style={{ opacity: 0.45 }}>—</div>
-                        )}
+                        <div style={{ fontWeight: 900 }}>{s ? s.value : 0} {w.unit}</div>
+                        <div style={S.muted}>{s ? s.status : "0"}</div>
                       </td>
                     );
                   })}
                 </tr>
               ))}
-              {leaderboard.length === 0 ? (
+              {leaderboardFiltered.length === 0 ? (
                 <tr>
                   <td style={S.td} colSpan={4 + (currentComp.workouts || []).length}>
-                    <div style={{ fontWeight: 900 }}>No leaderboard entries yet.</div>
-                    <div style={{ ...S.muted, marginTop: 6 }}>Submit some scores as an athlete/team to populate this.</div>
+                    <div style={{ fontWeight: 900 }}>No entries for this division yet.</div>
+                    <div style={{ ...S.muted, marginTop: 6 }}>Try “Overall” or submit scores for athletes/teams in this division.</div>
                   </td>
                 </tr>
               ) : null}
@@ -2014,18 +2142,26 @@ export default function App() {
     );
   }
 
-  function WorkoutEditorModal({ editor, onClose, onSave }) {
+  function WorkoutEditorModal({ editor, onClose, onSave, divisions }) {
     const [draft, setDraft] = useState(editor.draft);
 
     const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
-    const setCsv = (k, csv) =>
-      set(
-        k,
-        csv
-          .split(",")
-          .map((x) => x.trim())
-          .filter(Boolean)
-      );
+
+    function setScale(division, patch) {
+      setDraft((d) => {
+        const next = { ...(d.scalingByDivision || {}) };
+        next[division] = { ...(next[division] || {}), ...patch };
+        return { ...d, scalingByDivision: next };
+      });
+    }
+
+    function removeScale(division) {
+      setDraft((d) => {
+        const next = { ...(d.scalingByDivision || {}) };
+        delete next[division];
+        return { ...d, scalingByDivision: next };
+      });
+    }
 
     return (
       <div
@@ -2043,7 +2179,7 @@ export default function App() {
           if (e.target === e.currentTarget) onClose();
         }}
       >
-        <div style={{ ...S.card, width: "min(920px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ ...S.card, width: "min(980px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontSize: 18, fontWeight: 950 }}>{editor.mode === "new" ? "Add Workout" : "Edit Workout"}</div>
             <div style={S.muted}>Click outside to close</div>
@@ -2081,7 +2217,11 @@ export default function App() {
             </Field>
 
             <Field label="Equipment (comma separated)">
-              <input style={S.input} value={(draft.equipment || []).join(", ")} onChange={(e) => setCsv("equipment", e.target.value)} />
+              <input
+                style={S.input}
+                value={(draft.equipment || []).join(", ")}
+                onChange={(e) => set("equipment", csvToArr(e.target.value))}
+              />
             </Field>
 
             <div style={{ gridColumn: "1 / -1" }}>
@@ -2096,9 +2236,100 @@ export default function App() {
 
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Standards (comma separated)">
-                <input style={S.input} value={(draft.standards || []).join(", ")} onChange={(e) => setCsv("standards", e.target.value)} />
+                <input
+                  style={S.input}
+                  value={(draft.standards || []).join(", ")}
+                  onChange={(e) => set("standards", csvToArr(e.target.value))}
+                />
               </Field>
             </div>
+          </div>
+
+          <div style={S.divider} />
+
+          <div style={{ fontWeight: 950, fontSize: 14 }}>Scaling (per division overrides)</div>
+          <div style={{ ...S.muted, marginTop: 4 }}>
+            Add overrides for divisions that need different description/standards/equipment/unit/cap.
+          </div>
+
+          <div style={{ height: 10 }} />
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 12 }}>
+            {divisions.map((div) => {
+              const s = draft.scalingByDivision?.[div] || null;
+              return (
+                <div key={div} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                    <div style={{ fontWeight: 950 }}>{div}</div>
+                    <span style={S.tag}>{s ? "override" : "base"}</span>
+                  </div>
+
+                  <div style={{ height: 10 }} />
+
+                  <Field label="Description override (optional)">
+                    <textarea
+                      style={{ ...S.input, minHeight: 70, resize: "vertical" }}
+                      value={s?.description || ""}
+                      onChange={(e) => setScale(div, { description: e.target.value })}
+                      placeholder="If blank, base description is used."
+                    />
+                  </Field>
+
+                  <div style={{ height: 10 }} />
+
+                  <Field label="Standards override (comma separated, optional)">
+                    <input
+                      style={S.input}
+                      value={Array.isArray(s?.standards) ? s.standards.join(", ") : ""}
+                      onChange={(e) => setScale(div, { standards: csvToArr(e.target.value) })}
+                      placeholder="If blank, base standards are used."
+                    />
+                  </Field>
+
+                  <div style={{ height: 10 }} />
+
+                  <Field label="Equipment override (comma separated, optional)">
+                    <input
+                      style={S.input}
+                      value={Array.isArray(s?.equipment) ? s.equipment.join(", ") : ""}
+                      onChange={(e) => setScale(div, { equipment: csvToArr(e.target.value) })}
+                      placeholder="If blank, base equipment is used."
+                    />
+                  </Field>
+
+                  <div style={{ height: 10 }} />
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Unit override (optional)">
+                      <input
+                        style={S.input}
+                        value={s?.unit || ""}
+                        onChange={(e) => setScale(div, { unit: e.target.value })}
+                        placeholder="e.g. sec"
+                      />
+                    </Field>
+                    <Field label="Cap override (optional)">
+                      <input
+                        style={S.input}
+                        value={s?.cap || ""}
+                        onChange={(e) => setScale(div, { cap: e.target.value })}
+                        placeholder="e.g. 12:00"
+                      />
+                    </Field>
+                  </div>
+
+                  <div style={{ height: 10 }} />
+
+                  {s ? (
+                    <Button variant="danger" onClick={() => removeScale(div)}>
+                      Remove override
+                    </Button>
+                  ) : (
+                    <div style={S.muted}>No override set (uses base workout).</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div style={S.divider} />
@@ -2129,7 +2360,6 @@ export default function App() {
   }
 
   function localInputToIso(localValue) {
-    // localValue is "YYYY-MM-DDTHH:MM" interpreted in local time by Date()
     if (!localValue) return "";
     const d = new Date(localValue);
     if (Number.isNaN(d.getTime())) return "";
@@ -2179,13 +2409,13 @@ export default function App() {
           </div>
 
           <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>How the workflow works (demo)</div>
+            <div style={{ fontWeight: 900 }}>Workflow summary</div>
             <div style={{ height: 8 }} />
             <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.92 }}>
               <li>Athlete/Team submits score (status: submitted)</li>
               <li>Judge reviews and creates an adjustment (awaiting head judge)</li>
               <li>Head Judge confirms → score becomes FINAL</li>
-              <li>Leaderboard shows provisional unless final-only is enabled</li>
+              <li>Leaderboard tabs show Overall and per-division rankings</li>
             </ol>
           </div>
         </div>
@@ -2207,3 +2437,6 @@ export default function App() {
     </div>
   );
 }
+``
+
+/**
