@@ -1,21 +1,22 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";import React, { use**
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+
+/**
  * Throwdown Hub — Single-file Demo App.jsx (Role-based UX + Points Leaderboard)
  *
  * Key features:
- * - Workout scaling per division (overrides for description/standards/equipment/unit/cap)
+ * - Workout scaling per division (overrides for description/standards/equipment/unit/cap/sort)
  * - Athletes/Teams submit online scores (raw values)
  * - Judges review submissions and propose adjusted values
  * - Head Judge confirms adjustments into FINAL scores
  * - Organiser controls: workouts, scaling, live windows, leaderboard visibility, submissions
  * - Leaderboards are points-based (per workout ranking -> points) to aggregate mixed score types
- *
- * Build-safe: no external UI libs, no alias imports, clean first line (no BOM), no broken JSX.
+ * - Build-safe: no external UI libs, no alias imports, clean syntax, Vite/React friendly.
  */
 
 /* ================================
    LOCAL STORAGE
 ================================ */
-const LS_KEY = "tdh_single_file_demo_v5_points";
+const LS_KEY = "tdh_single_file_demo_v6_points";
 
 function safeParse(json, fallback) {
   try {
@@ -27,12 +28,14 @@ function safeParse(json, fallback) {
 }
 
 function loadData() {
-  const raw = localStorage.getItem(LS_KEY);
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(LS_KEY);
   return raw ? safeParse(raw, null) : null;
 }
 
 function saveData(data) {
-  localStorage.setItem(LS_KEY, JSON.stringify(data));
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LS_KEY, JSON.stringify(data));
 }
 
 /* ================================
@@ -66,7 +69,7 @@ function prettyDateTime(iso) {
 
 function prettyDate(isoDate) {
   if (!isoDate) return "—";
-  const d = new Date(isoDate + "T00:00:00");
+  const d = new Date(`${isoDate}T00:00:00`);
   if (Number.isNaN(d.getTime())) return isoDate;
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
@@ -92,11 +95,45 @@ function downloadJson(filename, obj) {
   URL.revokeObjectURL(url);
 }
 
-function csvToArr(csv) {
-  return String(csv || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function defaultWindow(hoursFromNowOpen, hoursDuration) {
+  const now = new Date();
+  const open = new Date(now.getTime() + hoursFromNowOpen * 3600 * 1000);
+  const close = new Date(open.getTime() + hoursDuration * 3600 * 1000);
+  return { openAt: open.toISOString(), closeAt: close.toISOString() };
+}
+
+function parseTimeToSeconds(v) {
+  // Accept:
+  // - number (seconds)
+  // - "mm:ss"
+  // - "hh:mm:ss"
+  // - "ss" (as string)
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const s = String(v).trim();
+  if (!s) return null;
+
+  // numeric string
+  if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
+
+  // time formats
+  const parts = s.split(":").map((x) => x.trim());
+  if (parts.length === 2 || parts.length === 3) {
+    const nums = parts.map((p) => (p === "" ? NaN : Number(p)));
+    if (nums.some((n) => !Number.isFinite(n))) return null;
+    if (parts.length === 2) {
+      const [mm, ss] = nums;
+      return mm * 60 + ss;
+    }
+    const [hh, mm, ss] = nums;
+    return hh * 3600 + mm * 60 + ss;
+  }
+
+  return null;
 }
 
 /* ================================
@@ -107,189 +144,216 @@ const ROLES = ["spectator", "athlete", "team_manager", "judge", "head_judge", "o
 /* ================================
    DEFAULT DEMO DATA
 ================================ */
-function defaultWindow(hoursFromNowOpen, hoursDuration) {
-  const now = new Date();
-  const open = new Date(now.getTime() + hoursFromNowOpen * 3600 * 1000);
-  const close = new Date(open.getTime() + hoursDuration * 3600 * 1000);
-  return { openAt: open.toISOString(), closeAt: close.toISOString() };
-}
-
-const DEFAULT_DATA = {
-  meta: { version: 5, createdAt: new Date().toISOString() },
-
-  role: "spectator",
-  mode: "athlete", // athlete | team
-
-  ui: {
-    tab: "competition", // directory | competition | admin
-    compId: "comp_london",
-  },
-
-  settings: {
-    hideLeaderboard: false,
-    submissionsClosed: false,
-    finalOnlyLeaderboard: false, // non-staff see only FINAL if true
-    allowProvisionalForStaff: true, // staff can still see provisional when final-only is on
-  },
-
-  directory: {
-    events: [
+const DEFAULT_DATA = (() => {
+  const compId = "comp_london";
+  const comp = {
+    id: compId,
+    name: "London Throwdown (Online Qualifier Demo)",
+    date: "2026-06-20",
+    location: "London",
+    description:
+      "Role demo: athletes submit online scores, judges adjust, head judge confirms. Points leaderboard aggregates across workouts.",
+    divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
+    judgePool: ["Judge Alex", "Judge Sam", "Judge Priya"],
+    headJudgePool: ["Head Judge Casey"],
+    workouts: [
       {
-        id: "evt_london_throwdown",
-        name: "London Throwdown",
-        startDate: "2026-06-20",
-        endDate: "2026-06-21",
-        city: "London",
-        venue: "Docklands Arena",
-        divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
-        tags: ["throwdown", "two-day"],
-        status: "upcoming",
-        regOpen: true,
-        website: "",
-        instagram: "@throwdownhub",
-        notes: "Demo event — replace with real data later.",
+        id: "w1",
+        name: "WOD 1 — Engine",
+        divisionNotes: "All divisions",
+        scoreType: "time", // time, reps, load, distance, calories
+        sort: "asc",
+        unit: "time (mm:ss)",
+        cap: "12:00",
+        tiebreak: "Optional: split time after round 3",
+        equipment: ["Row erg", "Wall ball", "Pull-up bar"],
+        standards: ["Video must show full ROM", "Wall ball to target", "Chin over bar"],
+        description:
+          "For time: 30/24 cal row, 50 wall balls, 30 pull-ups. Time stops when last pull-up is complete.",
+        media: { demoVideoUrl: "", scorecardUrl: "" },
+        liveWindow: defaultWindow(-2, 72),
+        scalingByDivision: {
+          Scaled: {
+            equipment: ["Row erg", "Wall ball", "Pull-up bar / band"],
+            standards: ["Jumping pull-ups allowed", "Wall ball lighter"],
+            description:
+              "For time: 24/18 cal row, 50 wall balls, 30 jumping pull-ups. Time stops when last rep is complete.",
+          },
+          "Masters 35+": {
+            standards: ["Chest-to-bar not required unless stated", "Movement standards apply"],
+          },
+        },
+      },
+      {
+        id: "w2",
+        name: "WOD 2 — Strength",
+        divisionNotes: "All divisions",
+        scoreType: "load",
+        sort: "desc",
+        unit: "kg",
+        cap: "10:00",
+        tiebreak: "Heaviest successful lift wins",
+        equipment: ["Barbell", "Plates", "Clips"],
+        standards: ["Full lockout required", "Video shows plates clearly"],
+        description: "Find a 1RM clean & jerk in 10 minutes.",
+        media: { demoVideoUrl: "", scorecardUrl: "" },
+        liveWindow: defaultWindow(-2, 72),
+        scalingByDivision: {
+          Scaled: {
+            description: "Find a heavy clean & jerk (not necessarily 1RM) in 10 minutes.",
+          },
+        },
+      },
+      {
+        id: "w3",
+        name: "WOD 3 — Sprint AMRAP",
+        divisionNotes: "All divisions",
+        scoreType: "reps",
+        sort: "desc",
+        unit: "reps",
+        cap: "8:00",
+        tiebreak: "Extra reps after cap not allowed",
+        equipment: ["Kettlebell", "Box", "Skipping rope"],
+        standards: ["Box jump full extension", "KB to eye level (American)"],
+        description:
+          "8-min AMRAP: 30 double-unders, 12 box jumps, 9 American KB swings. Score = total reps.",
+        media: { demoVideoUrl: "", scorecardUrl: "" },
+        liveWindow: defaultWindow(-2, 72),
+        scalingByDivision: {
+          Scaled: {
+            description:
+              "8-min AMRAP: 60 single-unders, 12 step-ups, 9 Russian KB swings. Score = total reps.",
+            standards: ["Step-ups allowed", "KB swing to shoulder height (Russian)"],
+          },
+          Intermediate: {
+            standards: ["Double-unders required", "KB American swings"],
+          },
+        },
       },
     ],
-  },
-
-  competitions: [
-    {
-      id: "comp_london",
-      name: "London Throwdown (Online Qualifier Demo)",
-      date: "2026-06-20",
-      location: "London",
-      description:
-        "Role demo: athletes submit online scores, judges adjust, head judge confirms. Points leaderboard aggregates across workouts.",
-      divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
-
-      athletes: [
-        { name: "Sam Carter", division: "RX" },
-        { name: "Jess Morgan", division: "Scaled" },
-        { name: "Mike Patel", division: "Intermediate" },
-        { name: "Aisha Khan", division: "Masters 35+" },
-      ],
-      teams: [
-        { name: "Team Alpha", division: "RX", members: ["Sam Carter", "Aisha Khan"] },
-        { name: "Team Beta", division: "Scaled", members: ["Jess Morgan", "Mike Patel"] },
-      ],
-
-      workouts: [
-        {
-          id: "w1",
-          name: "Qualifier 1 — Engine",
-          divisionNotes: "All divisions (scaled options below)",
-          scoreType: "time", // time | reps | load | points
-          sort: "asc", // asc for time, desc otherwise
-          unit: "sec",
-          cap: "12:00",
-          tiebreak: "Split time at round 6",
-          equipment: ["Row erg", "Pull-up bar", "Kettlebell"],
-          standards: [
-            "Row for calories shown on monitor",
-            "Pulling standard varies by division",
-            "KB swings overhead (American) – arms locked out",
-          ],
-          description:
-            "For time: 30/24 cal row, 30 pull-ups / C2B (per division), 60 KB swings (per division load).",
-          media: { demoVideoUrl: "", scorecardUrl: "" },
-          liveWindow: defaultWindow(2, 72),
-          scalingByDivision: {
-            RX: {
-              equipment: ["Row erg", "Pull-up bar", "KB 24/16"],
-              standards: ["Chest-to-bar", "KB 24/16"],
-              description:
-                "RX: 30/24 cal row, 30 C2B, 60 American KB swings (24/16).",
-            },
-            "Masters 35+": {
-              equipment: ["Row erg", "Pull-up bar", "KB 20/12"],
-              standards: ["Chest-to-bar OR pull-ups allowed (masters)", "KB 20/12"],
-              description:
-                "Masters: 30/24 cal row, 30 pull-ups (or C2B), 60 American KB swings (20/12).",
-            },
-            Intermediate: {
-              equipment: ["Row erg", "Pull-up bar", "KB 20/12"],
-              standards: ["Pull-ups", "KB 20/12"],
-              description:
-                "Intermediate: 30/24 cal row, 30 pull-ups, 60 American KB swings (20/12).",
-            },
-            Scaled: {
-              equipment: ["Row erg", "Pull-up bar", "KB 16/12"],
-              standards: ["Jumping pull-ups allowed", "KB 16/12"],
-              description:
-                "Scaled: 30/24 cal row, 30 jumping pull-ups, 60 American KB swings (16/12).",
-            },
-          },
+    athletes: [
+      { name: "Ava Johnson", division: "RX" },
+      { name: "Liam Patel", division: "RX" },
+      { name: "Noah Smith", division: "Intermediate" },
+      { name: "Mia Brown", division: "Scaled" },
+      { name: "Olivia Green", division: "Masters 35+" },
+      { name: "Ethan Taylor", division: "Intermediate" },
+    ],
+    teams: [
+      { name: "Team Docklands", division: "RX", members: ["Ava Johnson", "Liam Patel"] },
+      { name: "Team Fife Fire", division: "Intermediate", members: ["Noah Smith", "Ethan Taylor"] },
+      { name: "Team Scaled Squad", division: "Scaled", members: ["Mia Brown", "Olivia Green"] },
+    ],
+    submissions: {
+      // workoutId -> participantName -> submission
+      w1: {
+        "Ava Johnson": {
+          value: "08:44",
+          videoUrl: "",
+          notes: "All reps shown",
+          submittedAt: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
+          status: "submitted",
+          division: "RX",
+          judgeNote: "",
         },
-        {
-          id: "w2",
-          name: "Qualifier 2 — AMRAP",
-          divisionNotes: "Scaled uses lighter DB + step-overs",
-          scoreType: "reps",
-          sort: "desc",
-          unit: "reps",
-          cap: "15:00",
-          tiebreak: "Time to finish round 5",
-          equipment: ["Dumbbells", "Box", "Floor space"],
-          standards: [
-            "DB snatch: one head touches floor each rep",
-            "Box jump overs: two-foot takeoff (unless scaled option)",
-            "Burpee over DB: chest + thighs touch floor",
-          ],
-          description:
-            "AMRAP 15: 10 DB snatch, 12 box jump overs, 14 burpee over DB.",
-          media: { demoVideoUrl: "", scorecardUrl: "" },
-          liveWindow: defaultWindow(2, 72),
-          scalingByDivision: {
-            RX: { equipment: ["DB 22.5/15", "Box 24/20"], standards: ["DB 22.5/15", "BJO 24/20"] },
-            Intermediate: { equipment: ["DB 20/12.5", "Box 24/20"], standards: ["DB 20/12.5"] },
-            "Masters 35+": { equipment: ["DB 20/12.5", "Box 20/18"], standards: ["Lower box option 20/18"] },
-            Scaled: {
-              equipment: ["DB 15/10", "Box 20/18"],
-              standards: ["Box step-over allowed", "DB 15/10"],
-              description:
-                "Scaled: AMRAP 15 — 10 DB snatch (15/10), 12 box step-overs (20/18), 14 burpee over DB.",
-            },
-          },
+        "Liam Patel": {
+          value: "09:02",
+          videoUrl: "",
+          notes: "",
+          submittedAt: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
+          status: "submitted",
+          division: "RX",
+          judgeNote: "",
         },
-        {
-          id: "w3",
-          name: "Qualifier 3 — Strength Ladder",
-          divisionNotes: "RX: clean & jerk, others: clean only",
-          scoreType: "load",
-          sort: "desc",
-          unit: "kg",
-          cap: "10:00",
-          tiebreak: "Fastest time to heaviest successful lift",
-          equipment: ["Barbell", "Plates", "Collars"],
-          standards: [
-            "Full lockout overhead required for C&J (RX)",
-            "No bouncing on shoulders between reps",
-            "Video must show plates clearly",
-          ],
-          description:
-            "Build to a heavy complex within 10 minutes (division dependent).",
-          media: { demoVideoUrl: "", scorecardUrl: "" },
-          liveWindow: defaultWindow(2, 72),
-          scalingByDivision: {
-            RX: { description: "RX: build to heavy (1 clean + 1 jerk)." },
-            Intermediate: { description: "Intermediate: build to heavy single clean." },
-            "Masters 35+": { description: "Masters: build to heavy single clean." },
-            Scaled: { description: "Scaled: build to heavy single clean (technique focus)." },
-          },
+        "Mia Brown": {
+          value: "10:35",
+          videoUrl: "",
+          notes: "Scaled",
+          submittedAt: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(),
+          status: "submitted",
+          division: "Scaled",
+          judgeNote: "",
         },
-      ],
-
-      submissions: {}, // submissions[workoutId][participant]
-      adjustments: [], // awaiting head judge etc
-      finalScores: {}, // finalScores[workoutId][participant]
-
-      judgePool: ["Jordan Lee", "Taylor Price", "Charlie Scott"],
-      headJudgePool: ["Harper Adams"],
-
-      audit: [],
+      },
+      w2: {
+        "Ava Johnson": {
+          value: "92.5",
+          videoUrl: "",
+          notes: "",
+          submittedAt: new Date(Date.now() - 1000 * 60 * 60 * 3).toISOString(),
+          status: "submitted",
+          division: "RX",
+          judgeNote: "",
+        },
+        "Noah Smith": {
+          value: "110",
+          videoUrl: "",
+          notes: "Felt heavy",
+          submittedAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
+          status: "submitted",
+          division: "Intermediate",
+          judgeNote: "",
+        },
+      },
+      w3: {},
     },
-  ],
-};
+    adjustments: [
+      // example pending adjustment (head judge will approve/reject)
+      {
+        id: "adj_seed_1",
+        workoutId: "w1",
+        participant: "Liam Patel",
+        adjustedValue: "09:12",
+        note: "No-rep on 5 pull-ups (reps redone). Added time.",
+        judgeName: "Judge Alex",
+        judgeRole: "judge",
+        createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
+        status: "awaiting_head_judge",
+        decidedAt: "",
+        headJudgeName: "",
+        rejectReason: "",
+      },
+    ],
+    finalScores: {
+      // workoutId -> participant -> final
+      // w1: { "Ava Johnson": { value: "08:44", finalAt: "...", source: "submission", decidedBy: "system", note: "" } }
+    },
+    audit: [],
+  };
+
+  return {
+    meta: { version: 6, createdAt: new Date().toISOString() },
+    role: "spectator",
+    mode: "athlete", // athlete | team
+    ui: { tab: "competition", compId },
+    settings: {
+      hideLeaderboard: false,
+      submissionsClosed: false,
+      finalOnlyLeaderboard: false,
+      allowProvisionalForStaff: true,
+    },
+    directory: {
+      events: [
+        {
+          id: "evt_london_throwdown",
+          name: "London Throwdown",
+          startDate: "2026-06-20",
+          endDate: "2026-06-21",
+          city: "London",
+          venue: "Docklands Arena",
+          divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
+          tags: ["throwdown", "two-day"],
+          status: "upcoming",
+          regOpen: true,
+          website: "",
+          instagram: "@throwdownhub",
+          notes: "Demo event — replace with real data later.",
+        },
+      ],
+    },
+    competitions: [comp],
+  };
+})();
 
 /* ================================
    STYLES
@@ -303,9 +367,15 @@ const S = {
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif',
   },
   container: { maxWidth: 1180, margin: "0 auto", padding: 18 },
-  headerRow: { display: "flex", gap: 14, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" },
+  headerRow: {
+    display: "flex",
+    gap: 14,
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+  },
   title: { fontSize: 22, fontWeight: 900, letterSpacing: 0.2 },
-  subTitle: { fontSize: 12, opacity: 0.8, marginTop: 2 },
+  subTitle: { fontSize: 12, opacity: 0.8, marginTop: 2, lineHeight: 1.35 },
   card: {
     background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.12)",
@@ -313,7 +383,8 @@ const S = {
     padding: 14,
     boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
   },
-  row: { display: "flex", gap: 12, flexWrap: "wrap" },
+  row: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
+  col: { display: "flex", flexDirection: "column", gap: 10 },
   btn: {
     cursor: "pointer",
     userSelect: "none",
@@ -356,8 +427,8 @@ const S = {
     color: "#e7eefc",
     outline: "none",
   },
-  label: { fontSize: 12, opacity: 0.85, fontWeight: 800 },
-  muted: { opacity: 0.78, fontSize: 12 },
+  label: { fontSize: 12, opacity: 0.85, fontWeight: 800, marginBottom: 6 },
+  muted: { opacity: 0.78, fontSize: 12, lineHeight: 1.35 },
   pill: {
     display: "inline-flex",
     alignItems: "center",
@@ -379,8 +450,34 @@ const S = {
   },
   divider: { height: 1, background: "rgba(255,255,255,0.12)", margin: "10px 0" },
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
-  th: { textAlign: "left", fontSize: 12, opacity: 0.8, padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.12)" },
+  th: {
+    textAlign: "left",
+    fontSize: 12,
+    opacity: 0.8,
+    padding: "8px 10px",
+    borderBottom: "1px solid rgba(255,255,255,0.12)",
+  },
   td: { padding: "10px", borderBottom: "1px solid rgba(255,255,255,0.08)", verticalAlign: "top", fontSize: 13 },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2000,
+    padding: 14,
+  },
+  modal: {
+    width: "min(980px, 96vw)",
+    maxHeight: "90vh",
+    overflow: "auto",
+    borderRadius: 14,
+    background: "rgba(14,18,28,0.98)",
+    border: "1px solid rgba(255,255,255,0.14)",
+    boxShadow: "0 16px 60px rgba(0,0,0,0.55)",
+    padding: 14,
+  },
 };
 
 function Button({ variant = "default", style, ...props }) {
@@ -401,8 +498,8 @@ function Select({ value, onChange, options, style }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...S.input, ...style }}>
       {options.map((o) => (
-        <option key={o} value={o} style={{ background: "#0b0f17" }}>
-          {o}
+        <option key={String(o.value ?? o)} value={String(o.value ?? o)} style={{ background: "#0b0f17" }}>
+          {String(o.label ?? o)}
         </option>
       ))}
     </select>
@@ -428,6 +525,7 @@ function Toggle({ checked, onChange, label, hint }) {
           cursor: "pointer",
         }}
         aria-label={label}
+        type="button"
       >
         <span
           style={{
@@ -457,19 +555,17 @@ export default function App() {
 
   const role = data.role;
   const mode = data.mode;
-
   const isStaff = role === "judge" || role === "head_judge" || role === "organiser";
   const isOrganiser = role === "organiser";
   const isJudge = role === "judge";
   const isHeadJudge = role === "head_judge";
   const isAthleteSide = role === "athlete" || role === "team_manager";
+  const now = Date.now();
 
   const currentComp = useMemo(() => {
     const found = data.competitions.find((c) => c.id === data.ui.compId);
     return found || data.competitions[0];
   }, [data.competitions, data.ui.compId]);
-
-  const now = Date.now();
 
   function showToast(type, msg) {
     setToast({ type, msg });
@@ -477,8 +573,21 @@ export default function App() {
     showToast._t = window.setTimeout(() => setToast(null), 2600);
   }
 
+  function addAudit(message) {
+    updateComp(currentComp.id, (c) => {
+      c.audit = c.audit || [];
+      c.audit.unshift({
+        id: uid("audit"),
+        at: new Date().toISOString(),
+        whoRole: role,
+        message,
+      });
+      return c;
+    });
+  }
+
   function resetDemo() {
-    localStorage.removeItem(LS_KEY);
+    window.localStorage.removeItem(LS_KEY);
     setData(DEFAULT_DATA);
   }
 
@@ -499,7 +608,7 @@ export default function App() {
   }
 
   function toggleSetting(key) {
-    setData((d) => ({ ...d, settings: { ...d.settings, !d.settings[key] } }));
+    setData((d) => ({ ...d, settings: { ...d.settings, [key]: !d.settings[key] } }));
   }
 
   function updateComp(compId, updater) {
@@ -511,19 +620,6 @@ export default function App() {
       const next = updater(draft) || draft;
       comps[idx] = next;
       return { ...d, competitions: comps };
-    });
-  }
-
-  function addAudit(message) {
-    updateComp(currentComp.id, (c) => {
-      c.audit = c.audit || [];
-      c.audit.unshift({
-        id: uid("audit"),
-        at: new Date().toISOString(),
-        whoRole: role,
-        message,
-      });
-      return c;
     });
   }
 
@@ -583,6 +679,9 @@ export default function App() {
       standards: Array.isArray(scaled.standards) ? scaled.standards : workout.standards,
       unit: scaled.unit || workout.unit,
       cap: scaled.cap || workout.cap,
+      sort: scaled.sort || workout.sort,
+      scoreType: scaled.scoreType || workout.scoreType,
+      tiebreak: scaled.tiebreak || workout.tiebreak,
     };
   }
 
@@ -615,37 +714,36 @@ export default function App() {
   /* ================================
      EFFECTIVE SCORE RESOLUTION
      (Final > awaiting adjustment > submission)
-================================ */
+  ================================ */
   function getEffectiveScore(workoutId, participant) {
     const c = currentComp;
-    if (!c) return { value: null, status: "none" };
+    if (!c) return { value: null, status: "none", note: "" };
 
-    const w = (c.workouts || []).find((x) => x.id === workoutId);
-    if (!w) return { value: null, status: "none" };
-
-    const privileged = isStaff && staffCanSeeProvisional;
-    const showProvisional = !finalOnly || privileged;
-
-    // Final
-    const f = c.finalScores?.[workoutId]?.[participant];
-    if (f && f.value !== undefined && f.value !== null) {
-      return { value: Number(f.value) || 0, status: "FINAL" };
+    const final = c.finalScores?.[workoutId]?.[participant];
+    if (final && final.value != null && String(final.value) !== "") {
+      return { value: final.value, status: "final", note: final.note || "" };
     }
 
-    if (showProvisional) {
-      // Latest awaiting adjustment
-      const awaiting = (c.adjustments || [])
-        .filter((a) => a.workoutId === workoutId && a.participant === participant && a.status === "awaiting_head_judge")
-        .sort((a, b) => String(b.adjustedAt || "").localeCompare(String(a.adjustedAt || "")))[0];
-
-      if (awaiting) return { value: Number(awaiting.adjustedValue) || 0, status: "ADJUSTED" };
-
-      // Submission
-      const s = c.submissions?.[workoutId]?.[participant];
-      if (s && s.status !== "withdrawn") return { value: Number(s.value) || 0, status: s.status || "submitted" };
+    const pending = (c.adjustments || []).find(
+      (a) => a.workoutId === workoutId && a.participant === participant && a.status === "awaiting_head_judge"
+    );
+    if (pending && pending.adjustedValue != null && String(pending.adjustedValue) !== "") {
+      return { value: pending.adjustedValue, status: "awaiting", note: pending.note || "" };
     }
 
-    return { value: null, status: "none" };
+    const sub = c.submissions?.[workoutId]?.[participant];
+    if (sub && sub.value != null && String(sub.value) !== "") {
+      return { value: sub.value, status: sub.status || "submitted", note: sub.judgeNote || "" };
+    }
+
+    return { value: null, status: "none", note: "" };
+  }
+
+  function canSeeProvisional() {
+    // if final-only mode: staff may still see provisional if toggle enabled
+    if (!finalOnly) return true;
+    if (!isStaff) return false;
+    return !!staffCanSeeProvisional;
   }
 
   /* ================================
@@ -654,99 +752,91 @@ export default function App() {
      - points = N - rank + 1
      - missing score => 0 points
      - supports Overall + per division
-================================ */
+  ================================ */
   function isAscForWorkout(w) {
-    // explicit sort takes precedence; else time defaults asc, others desc
     if (w.sort === "asc") return true;
     if (w.sort === "desc") return false;
     return w.scoreType === "time";
+  }
+
+  function scoreToSortable(w, value) {
+    if (value == null) return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    if (w.scoreType === "time") return parseTimeToSeconds(s);
+    return toNumberOrNull(s);
   }
 
   function computePointsLeaderboard(scopeParticipants) {
     const c = currentComp;
     if (!c) return [];
 
-    // init rows
-    const rows = new Map();
-    scopeParticipants.forEach((p) => {
-      rows.set(p.name, { name: p.name, division: p.division || "", totalPoints: 0, per: {} });
-    });
+    const N = scopeParticipants.length;
+    const workouts = c.workouts || [];
 
-    for (const w of c.workouts || []) {
-      const asc = isAscForWorkout(w);
-
-      // collect scores
-      const scored = [];
-      const missing = [];
-
-      for (const p of scopeParticipants) {
-        const eff = getEffectiveScore(w.id, p.name);
-        if (eff.value === null) {
-          missing.push({ name: p.name, value: null, status: "0" });
-        } else {
-          scored.push({ name: p.name, value: eff.value, status: eff.status });
+    // Precompute per workout ranking + points
+    const perWorkout = {};
+    workouts.forEach((wBase) => {
+      const rows = scopeParticipants.map((p) => {
+        const eff = getEffectiveScore(wBase.id, p.name);
+        // apply visibility rule:
+        if (!canSeeProvisional() && eff.status !== "final") {
+          return { name: p.name, division: p.division, value: null, status: "hidden", sortable: null };
         }
-      }
-
-      // sort scored by direction (best first)
-      scored.sort((a, b) => {
-        if (a.value === b.value) return a.name.localeCompare(b.name);
-        return asc ? a.value - b.value : b.value - a.value;
+        const sortable = scoreToSortable(wBase, eff.value);
+        return { name: p.name, division: p.division, value: eff.value, status: eff.status, sortable };
       });
 
-      // assign competition ranks (1,1,3)
-      const ranks = new Map();
-      let rank = 0;
-      let seen = 0;
-      let prev = null;
+      const asc = isAscForWorkout(wBase);
+      const scored = rows.filter((r) => r.sortable != null);
+      scored.sort((a, b) => {
+        if (a.sortable === b.sortable) return 0;
+        return asc ? a.sortable - b.sortable : b.sortable - a.sortable;
+      });
 
-      for (const item of scored) {
-        seen += 1;
-        if (prev === null || item.value !== prev) {
-          rank = seen;
-          prev = item.value;
-        }
-        ranks.set(item.name, rank);
+      // competition ranking (ties share rank)
+      const rankMap = new Map();
+      let rank = 1;
+      for (let i = 0; i < scored.length; i++) {
+        if (i > 0 && scored[i].sortable !== scored[i - 1].sortable) rank = i + 1;
+        rankMap.set(scored[i].name, rank);
       }
 
-      const N = scopeParticipants.length;
+      const pointsMap = new Map();
+      rows.forEach((r) => {
+        const rnk = rankMap.get(r.name);
+        if (!rnk) pointsMap.set(r.name, 0);
+        else pointsMap.set(r.name, N - rnk + 1);
+      });
 
-      for (const p of scopeParticipants) {
-        const r = rows.get(p.name);
-        if (!r) continue;
+      perWorkout[wBase.id] = { rankMap, pointsMap, rows };
+    });
 
-        const eff = getEffectiveScore(w.id, p.name);
+    // Build final table
+    const table = scopeParticipants.map((p) => {
+      const breakdown = (currentComp.workouts || []).map((w) => {
+        const wk = perWorkout[w.id];
+        const points = wk?.pointsMap?.get(p.name) ?? 0;
+        const rank = wk?.rankMap?.get(p.name) ?? null;
+        const row = (wk?.rows || []).find((r) => r.name === p.name) || {};
+        return { workoutId: w.id, workoutName: w.name, points, rank, value: row.value ?? null, status: row.status ?? "none" };
+      });
+      const totalPoints = breakdown.reduce((sum, b) => sum + (b.points || 0), 0);
+      return { name: p.name, division: p.division, totalPoints, breakdown };
+    });
 
-        let points = 0;
-        let raw = 0;
-        let status = "0";
-        let workoutRank = null;
+    // Sort by total points desc, then name
+    table.sort((a, b) => {
+      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+      return a.name.localeCompare(b.name);
+    });
 
-        if (eff.value !== null) {
-          raw = eff.value;
-          status = eff.status;
-          workoutRank = ranks.get(p.name) ?? null;
-          points = workoutRank ? Math.max(0, N - workoutRank + 1) : 0;
-        } else {
-          raw = 0; // "0s" for missing
-          status = "0";
-          workoutRank = null;
-          points = 0;
-        }
-
-        r.per[w.id] = { raw, unit: w.unit, status, points, rank: workoutRank };
-        r.totalPoints += points;
-      }
-    }
-
-    const arr = Array.from(rows.values());
-    arr.sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
-    return arr;
+    return table;
   }
 
   /* ================================
      Athlete-side selections
-================================ */
+  ================================ */
   const [athleteView, setAthleteView] = useState("workouts"); // workouts | submit | leaderboard | my_submissions
   const [mySelection, setMySelection] = useState(() => participantList[0] || "");
   const [lbDivision, setLbDivision] = useState("Overall"); // Overall or division name
@@ -754,7 +844,7 @@ export default function App() {
   useEffect(() => {
     if (!participantList.includes(mySelection)) setMySelection(participantList[0] || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, data.ui.compId, participantList.join("|")]);
+  }, [mode, data.ui.compId, participantList.join("\n")]);
 
   useEffect(() => {
     const opts = ["Overall", ...compDivisions];
@@ -763,66 +853,54 @@ export default function App() {
 
   /* ================================
      SUBMIT DRAFT
-================================ */
+  ================================ */
   const [submitDraft, setSubmitDraft] = useState({ workoutId: "", value: "", videoUrl: "", notes: "" });
 
   useEffect(() => {
     const firstWorkout = currentComp?.workouts?.[0]?.id || "";
     setSubmitDraft((d) => ({ ...d, workoutId: firstWorkout }));
-  }, [data.ui.compId]);
+  }, [data.ui.compId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function submitOnlineScore() {
     const comp = currentComp;
     if (!comp) return;
 
-    if (submissionsClosed) {
-      showToast("warn", "Submissions are closed by the organiser.");
-      return;
-    }
-
-    const wBase = (comp.workouts || []).find((x) => x.id === submitDraft.workoutId);
-    if (!wBase) return;
-
-    if (!workoutIsLive(wBase)) {
-      showToast("warn", "This workout is not live right now.");
-      return;
-    }
-
     const participant = mySelection;
-    if (!participant) {
-      showToast("warn", "Select an athlete/team.");
-      return;
-    }
+    if (!participant) return showToast("warn", "Select an athlete/team first.");
+    const w = (comp.workouts || []).find((x) => x.id === submitDraft.workoutId);
+    if (!w) return showToast("warn", "Select a workout.");
+
+    if (submissionsClosed) return showToast("warn", "Submissions are closed by organiser.");
+    if (!workoutIsLive(w)) return showToast("warn", "This workout is not currently live.");
+
+    const value = String(submitDraft.value || "").trim();
+    if (!value) return showToast("warn", "Enter a score value.");
 
     const division = participantMeta.get(participant)?.division || "";
-    const n = toNumberOrNull(submitDraft.value);
-    if (n === null) {
-      showToast("warn", "Score must be a number.");
-      return;
-    }
 
     updateComp(comp.id, (c) => {
       c.submissions = c.submissions || {};
-      c.submissions[wBase.id] = c.submissions[wBase.id] || {};
-      c.submissions[wBase.id][participant] = {
-        value: n,
-        videoUrl: submitDraft.videoUrl || "",
-        notes: submitDraft.notes || "",
+      c.submissions[w.id] = c.submissions[w.id] || {};
+      c.submissions[w.id][participant] = {
+        value,
+        videoUrl: String(submitDraft.videoUrl || "").trim(),
+        notes: String(submitDraft.notes || "").trim(),
         submittedAt: new Date().toISOString(),
         status: "submitted",
-        judgeNote: "",
         division,
+        judgeNote: "",
       };
       return c;
     });
 
-    addAudit(`Online submission: ${participant} (${division}) submitted ${n} for ${wBase.name}`);
-    showToast("ok", "Submitted! Judge will review.");
+    addAudit(`Submission: ${participant} -> ${w.name} = ${value}`);
+    showToast("ok", "Score submitted.");
+    setAthleteView("my_submissions");
   }
 
   /* ================================
      JUDGE VIEW
-================================ */
+  ================================ */
   const [judgeView, setJudgeView] = useState("review"); // review | adjusted_queue | leaderboard
   const [judgeName, setJudgeName] = useState(() => currentComp?.judgePool?.[0] || "Judge");
 
@@ -847,7 +925,7 @@ export default function App() {
           videoUrl: s.videoUrl,
           notes: s.notes,
           submittedAt: s.submittedAt,
-          status: s.status,
+          status: s.status || "submitted",
           judgeNote: s.judgeNote || "",
         });
       }
@@ -857,6 +935,7 @@ export default function App() {
   }, [currentComp, participantMeta]);
 
   const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted", division: "all" });
+
   const judgeFiltered = useMemo(() => {
     const q = normaliseStr(judgeFilter.q);
     return submissionsFlat.filter((r) => {
@@ -864,7 +943,7 @@ export default function App() {
       if (judgeFilter.status !== "all" && r.status !== judgeFilter.status) return false;
       if (judgeFilter.division !== "all" && r.division !== judgeFilter.division) return false;
       if (q) {
-        const blob = `${r.participant} ${r.workoutName} ${r.division} ${r.notes}`.toLowerCase();
+        const blob = `${r.participant} ${r.workoutName} ${r.value} ${r.notes} ${r.division}`.toLowerCase();
         if (!blob.includes(q)) return false;
       }
       return true;
@@ -887,58 +966,50 @@ export default function App() {
     const c = currentComp;
     if (!c) return;
 
-    const n = toNumberOrNull(adjustDraft.adjustedValue);
-    if (n === null) {
-      showToast("warn", "Adjusted score must be a number.");
-      return;
-    }
+    const value = String(adjustDraft.adjustedValue || "").trim();
+    if (!adjustDraft.workoutId || !adjustDraft.participant) return;
+    if (!value) return showToast("warn", "Adjusted value required.");
 
-    const w = (c.workouts || []).find((x) => x.id === adjustDraft.workoutId);
-    if (!w) return;
-
-    const original = c.submissions?.[w.id]?.[adjustDraft.participant];
-    if (!original) {
-      showToast("warn", "Original submission not found.");
-      return;
-    }
-
-    updateComp(c.id, (draft) => {
-      draft.adjustments = draft.adjustments || [];
-      draft.adjustments.unshift({
-        id: adjustDraft.id,
-        workoutId: w.id,
-        workoutName: w.name,
+    updateComp(c.id, (comp) => {
+      comp.adjustments = comp.adjustments || [];
+      comp.adjustments.unshift({
+        id: adjustDraft.id || uid("adj"),
+        workoutId: adjustDraft.workoutId,
         participant: adjustDraft.participant,
-        division: original.division || participantMeta.get(adjustDraft.participant)?.division || "",
-        originalValue: original.value,
-        adjustedValue: n,
+        adjustedValue: value,
+        note: String(adjustDraft.note || "").trim(),
         judgeName: judgeName || "Judge",
-        judgeNote: adjustDraft.note || "",
-        adjustedAt: new Date().toISOString(),
+        judgeRole: "judge",
+        createdAt: new Date().toISOString(),
         status: "awaiting_head_judge",
+        decidedAt: "",
+        headJudgeName: "",
+        rejectReason: "",
       });
 
-      draft.submissions = draft.submissions || {};
-      draft.submissions[w.id] = draft.submissions[w.id] || {};
-      draft.submissions[w.id][adjustDraft.participant] = {
-        ...draft.submissions[w.id][adjustDraft.participant],
-        status: "submitted",
-        judgeNote: adjustDraft.note || "",
-      };
-
-      return draft;
+      // mark submission as adjusted (provisional)
+      comp.submissions = comp.submissions || {};
+      comp.submissions[adjustDraft.workoutId] = comp.submissions[adjustDraft.workoutId] || {};
+      const existing = comp.submissions[adjustDraft.workoutId][adjustDraft.participant];
+      if (existing) {
+        existing.status = "adjusted";
+        existing.judgeNote = `Proposed adjustment: ${value}${adjustDraft.note ? ` — ${adjustDraft.note}` : ""}`;
+      }
+      return comp;
     });
 
-    addAudit(`Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`);
+    addAudit(`Adjustment proposed: ${adjustDraft.participant} -> ${adjustDraft.workoutId} = ${value}`);
     showToast("ok", "Adjustment sent to Head Judge.");
     setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
+    setJudgeView("adjusted_queue");
   }
 
   /* ================================
      HEAD JUDGE VIEW
-================================ */
+  ================================ */
   const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | leaderboard | audit
   const [headJudgeName, setHeadJudgeName] = useState(() => currentComp?.headJudgePool?.[0] || "Head Judge");
+  const [rejectNote, setRejectNote] = useState("");
 
   useEffect(() => {
     setHeadJudgeName(currentComp?.headJudgePool?.[0] || "Head Judge");
@@ -956,56 +1027,71 @@ export default function App() {
     const adj = (c.adjustments || []).find((x) => x.id === adjId);
     if (!adj) return;
 
-    updateComp(c.id, (draft) => {
-      draft.finalScores = draft.finalScores || {};
-      draft.finalScores[adj.workoutId] = draft.finalScores[adj.workoutId] || {};
-      draft.finalScores[adj.workoutId][adj.participant] = {
-        value: adj.adjustedValue,
-        confirmedBy: headJudgeName || "Head Judge",
-        confirmedAt: new Date().toISOString(),
-        note: adj.judgeNote || "",
-        division: adj.division || "",
+    updateComp(c.id, (comp) => {
+      const a = (comp.adjustments || []).find((x) => x.id === adjId);
+      if (!a) return comp;
+      a.status = "approved";
+      a.decidedAt = new Date().toISOString();
+      a.headJudgeName = headJudgeName || "Head Judge";
+      a.rejectReason = "";
+
+      // write final score
+      comp.finalScores = comp.finalScores || {};
+      comp.finalScores[a.workoutId] = comp.finalScores[a.workoutId] || {};
+      comp.finalScores[a.workoutId][a.participant] = {
+        value: a.adjustedValue,
+        finalAt: a.decidedAt,
+        source: "adjustment",
+        decidedBy: a.headJudgeName,
+        note: a.note || "",
       };
 
-      const item = (draft.adjustments || []).find((x) => x.id === adjId);
-      if (item) item.status = "confirmed";
-      return draft;
+      // mark submission status final
+      comp.submissions = comp.submissions || {};
+      comp.submissions[a.workoutId] = comp.submissions[a.workoutId] || {};
+      if (comp.submissions[a.workoutId][a.participant]) {
+        comp.submissions[a.workoutId][a.participant].status = "final";
+      }
+      return comp;
     });
 
-    addAudit(`Head Judge confirmed adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: final=${adj.adjustedValue}`);
-    showToast("ok", "Confirmed -> Final score updated.");
+    addAudit(`FINAL approved: ${adj.participant} -> ${adj.workoutId} = ${adj.adjustedValue}`);
+    showToast("ok", "Final score confirmed.");
   }
 
-  function rejectAdjustment(adjId, reason) {
+  function rejectAdjustment(adjId) {
     const c = currentComp;
     if (!c) return;
     const adj = (c.adjustments || []).find((x) => x.id === adjId);
     if (!adj) return;
 
-    updateComp(c.id, (draft) => {
-      const item = (draft.adjustments || []).find((x) => x.id === adjId);
-      if (item) {
-        item.status = "rejected";
-        item.headJudgeNote = reason || "Rejected";
-      }
+    const reason = String(rejectNote || "").trim();
+    updateComp(c.id, (comp) => {
+      const a = (comp.adjustments || []).find((x) => x.id === adjId);
+      if (!a) return comp;
+      a.status = "rejected";
+      a.decidedAt = new Date().toISOString();
+      a.headJudgeName = headJudgeName || "Head Judge";
+      a.rejectReason = reason || "Rejected";
 
-      draft.submissions = draft.submissions || {};
-      draft.submissions[adj.workoutId] = draft.submissions[adj.workoutId] || {};
-      const sub = draft.submissions[adj.workoutId][adj.participant];
-      if (sub) {
-        sub.status = "needs_change";
-        sub.judgeNote = reason || "Please resubmit / clarify score evidence.";
+      // revert submission status back to submitted (still editable)
+      comp.submissions = comp.submissions || {};
+      comp.submissions[a.workoutId] = comp.submissions[a.workoutId] || {};
+      if (comp.submissions[a.workoutId][a.participant]) {
+        comp.submissions[a.workoutId][a.participant].status = "submitted";
+        comp.submissions[a.workoutId][a.participant].judgeNote = `Adjustment rejected: ${a.rejectReason}`;
       }
-      return draft;
+      return comp;
     });
 
-    addAudit(`Head Judge rejected adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: ${reason || "no note"}`);
-    showToast("ok", "Rejected (athlete marked needs change).");
+    addAudit(`Adjustment rejected: ${adj.participant} -> ${adj.workoutId}`);
+    showToast("ok", "Adjustment rejected.");
+    setRejectNote("");
   }
 
   /* ================================
-     POINTS LEADERBOARD (memo)
-================================ */
+     LEADERBOARD (memo)
+  ================================ */
   const scopeParticipants = useMemo(() => {
     const c = currentComp;
     if (!c) return [];
@@ -1024,10 +1110,10 @@ export default function App() {
   }, [currentComp, mode, lbDivision, isStaff, staffCanSeeProvisional, finalOnly]);
 
   /* ================================
-     ORGANISER: workout editor + schedule + controls
-================================ */
+     ORGANISER: workout editor + controls
+  ================================ */
   const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | controls | audit
-  const [workoutEditor, setWorkoutEditor] = useState(null); // {mode, draft}
+  const [workoutEditor, setWorkoutEditor] = useState(null); // { mode, draft }
 
   function openNewWorkout() {
     setWorkoutEditor({
@@ -1060,18 +1146,13 @@ export default function App() {
 
     updateComp(currentComp.id, (c) => {
       c.workouts = c.workouts || [];
-      const idx = c.workouts.findIndex((x) => x.id === draftWorkout.id);
+      const idx = c.workouts.findIndex((w) => w.id === draftWorkout.id);
       if (idx >= 0) c.workouts[idx] = draftWorkout;
-      else c.workouts.push(draftWorkout);
-
-      c.submissions = c.submissions || {};
-      c.submissions[draftWorkout.id] = c.submissions[draftWorkout.id] || {};
-      c.finalScores = c.finalScores || {};
-      c.finalScores[draftWorkout.id] = c.finalScores[draftWorkout.id] || {};
+      else c.workouts.unshift(draftWorkout);
       return c;
     });
 
-    addAudit(`${workoutEditor.mode === "new" ? "Created" : "Updated"} workout: ${draftWorkout.name}`);
+    addAudit(`${workoutEditor?.mode === "edit" ? "Edited" : "Created"} workout: ${draftWorkout.name}`);
     showToast("ok", "Workout saved.");
     setWorkoutEditor(null);
   }
@@ -1090,7 +1171,7 @@ export default function App() {
 
   /* ================================
      HEADER / TABS
-================================ */
+  ================================ */
   const tab = data.ui.tab;
 
   const Header = () => (
@@ -1098,62 +1179,46 @@ export default function App() {
       <div>
         <div style={S.title}>Throwdown Hub — Demo (Points Leaderboard)</div>
         <div style={S.subTitle}>
-          Points per workout (rank-based) → aggregate total points, with division scaling + role workflows
+          Points per workout (rank-based) → aggregate total points. Includes judge → head judge finalisation workflow, plus
+          division scaling & organiser controls.
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
         <div style={S.pill}>
           <strong>Role</strong>
-          <Select value={data.role} onChange={setRole} options={ROLES} style={{ padding: "6px 8px", borderRadius: 999 }} />
+          <Select value={role} onChange={setRole} options={ROLES} style={{ width: 170 }} />
         </div>
 
         <div style={S.pill}>
           <strong>Mode</strong>
-          <Button variant="primary" onClick={toggleMode} style={{ padding: "6px 10px", borderRadius: 999 }}>
-            {mode === "athlete" ? "Athlete" : "Team"}
+          <Button onClick={toggleMode} variant="default" type="button">
+            {mode === "athlete" ? "Athletes" : "Teams"}
           </Button>
         </div>
 
-        <Field label="Competition" style={{ minWidth: 260 }}>
-          <Select value={data.ui.compId} onChange={setCompId} options={data.competitions.map((c) => c.id)} />
-        </Field>
-
-        <Button onClick={exportAll}>Export All</Button>
-        <Button variant="primary" onClick={() => fileInputRef.current?.click()}>
-          Import JSON
-        </Button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/json"
-          style={{ display: "none" }}
-          onChange={async (e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            const res = await importJson(f);
-            if (res.ok) showToast("ok", "Imported successfully.");
-            else showToast("warn", res.error || "Import failed.");
-            e.target.value = "";
-          }}
-        />
-
-        <Button variant="danger" onClick={resetDemo}>
-          Reset Demo
-        </Button>
+        <div style={S.pill}>
+          <strong>Competition</strong>
+          <Select
+            value={data.ui.compId}
+            onChange={setCompId}
+            options={(data.competitions || []).map((c) => ({ value: c.id, label: c.name }))}
+            style={{ width: 260 }}
+          />
+        </div>
       </div>
     </div>
   );
 
   const Tabs = () => (
     <div style={{ ...S.row, marginTop: 12 }}>
-      <Button variant={tab === "competition" ? "primary" : "default"} onClick={() => setTab("competition")}>
+      <Button variant={tab === "competition" ? "primary" : "default"} onClick={() => setTab("competition")} type="button">
         Competition
       </Button>
-      <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")}>
+      <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")} type="button">
         Directory (lite)
       </Button>
-      <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")}>
+      <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")} type="button">
         Settings / Admin
       </Button>
     </div>
@@ -1171,7 +1236,7 @@ export default function App() {
           background: toast.type === "ok" ? "rgba(70,170,255,0.25)" : "rgba(255,160,70,0.22)",
           border: "1px solid rgba(255,255,255,0.14)",
           boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-          maxWidth: 380,
+          maxWidth: 420,
           zIndex: 1000,
         }}
       >
@@ -1181,20 +1246,24 @@ export default function App() {
     ) : null;
 
   /* ================================
-     DIRECTORY (lite placeholder)
-================================ */
+     DIRECTORY (lite)
+  ================================ */
   const DirectoryPanel = () => {
     const evt = data.directory.events?.[0];
     return (
-      <div style={{ ...S.row, marginTop: 14 }}>
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
         <div style={{ flex: "1 1 760px", ...S.card }}>
           <div style={{ fontSize: 18, fontWeight: 900 }}>Events Directory (lite)</div>
-          <div style={S.muted}>Qualifier workflow demo. You can reinsert your full calendar/list directory here.</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            Placeholder directory panel. You can reinsert your full calendar/list directory later.
+          </div>
+
           <div style={S.divider} />
+
           {evt ? (
-            <div style={S.card}>
+            <div>
               <div style={{ fontWeight: 900, fontSize: 15 }}>{evt.name}</div>
-              <div style={S.muted}>
+              <div style={{ ...S.muted, marginTop: 4 }}>
                 {prettyDate(evt.startDate)} → {prettyDate(evt.endDate)} • {evt.city} • {evt.venue}
               </div>
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1206,36 +1275,61 @@ export default function App() {
               </div>
               {evt.instagram ? (
                 <div style={{ marginTop: 8, ...S.muted }}>
-                  IG: <strong>{evt.instagram}</strong>
+                  IG: <span style={{ opacity: 0.95 }}>{evt.instagram}</span>
                 </div>
               ) : null}
+              {evt.notes ? <div style={{ marginTop: 8, ...S.muted }}>{evt.notes}</div> : null}
             </div>
           ) : (
             <div style={S.muted}>No events in directory.</div>
           )}
+        </div>
+
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Demo tips</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>
+            • Switch roles in the header to see role-based UX.
+            <br />• Submit scores as Athlete/Team Manager.
+            <br />• Propose adjustments as Judge.
+            <br />• Confirm finals as Head Judge.
+            <br />• Toggle visibility controls as Organiser.
+          </div>
         </div>
       </div>
     );
   };
 
   /* ================================
-     COMPETITION PANEL (role-specific)
-================================ */
+     COMPETITION PANEL
+  ================================ */
   const CompetitionPanel = () => {
     if (!currentComp) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
 
     return (
-      <div style={{ ...S.row, marginTop: 14 }}>
+      <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
         <div style={{ flex: "1 1 760px", ...S.card }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 18, fontWeight: 950 }}>{currentComp.name}</div>
-              <div style={S.muted}>
-                {prettyDate(currentComp.date)} • {currentComp.location} • {currentComp.description}
+              <div style={{ ...S.muted, marginTop: 4 }}>
+                {prettyDate(currentComp.date)} • {currentComp.location}
               </div>
+              <div style={{ ...S.muted, marginTop: 6 }}>{currentComp.description}</div>
             </div>
-            <div style={S.pill}>
-              <strong>Role:</strong> {role}
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={S.pill}>
+                <strong>Leaderboard</strong>
+                <span style={{ opacity: 0.85 }}>{leaderboardHidden ? "Hidden" : "Visible"}</span>
+              </div>
+              <div style={S.pill}>
+                <strong>Submissions</strong>
+                <span style={{ opacity: 0.85 }}>{submissionsClosed ? "Closed" : "Open"}</span>
+              </div>
+              <div style={S.pill}>
+                <strong>Final-only</strong>
+                <span style={{ opacity: 0.85 }}>{finalOnly ? "On" : "Off"}</span>
+              </div>
             </div>
           </div>
 
@@ -1248,35 +1342,35 @@ export default function App() {
           {isOrganiser ? <OrganiserView /> : null}
         </div>
 
-        <div style={{ flex: "0 0 360px", ...S.card, alignSelf: "flex-start" }}>
-          <div style={{ fontSize: 16, fontWeight: 900 }}>Competition Status</div>
-          <div style={S.divider} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={S.pill}>
-              <strong>Submissions</strong> {submissionsClosed ? "Closed" : "Open"}
-            </div>
-            <div style={S.pill}>
-              <strong>Leaderboard</strong> {leaderboardHidden ? "Hidden" : finalOnly ? "Final-only (non-staff)" : "Provisional"}
-            </div>
-            <div style={S.pill}>
-              <strong>Now</strong> {prettyDateTime(new Date().toISOString())}
-            </div>
-          </div>
+        <div style={{ flex: "0 0 360px", ...S.card }}>
+          <div style={{ fontWeight: 900 }}>Quick controls</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>For demo: organiser can toggle these from Settings/Admin too.</div>
 
-          <div style={S.divider} />
-
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Workouts (live windows)</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {(currentComp.workouts || []).map((w) => (
-              <div key={w.id} style={{ ...S.card, padding: 10 }}>
-                <div style={{ fontWeight: 900 }}>{w.name}</div>
-                <div style={S.muted}>{workoutLiveLabel(w)}</div>
-                <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <span style={S.tag}>{w.scoreType}</span>
-                  <span style={S.tag}>{w.cap}</span>
-                </div>
-              </div>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
+            <Toggle
+              checked={data.settings.hideLeaderboard}
+              onChange={() => toggleSetting("hideLeaderboard")}
+              label="Hide leaderboard"
+              hint="If on, spectators/athletes won't see it."
+            />
+            <Toggle
+              checked={data.settings.submissionsClosed}
+              onChange={() => toggleSetting("submissionsClosed")}
+              label="Close submissions"
+              hint="Stops athletes/teams submitting new scores."
+            />
+            <Toggle
+              checked={data.settings.finalOnlyLeaderboard}
+              onChange={() => toggleSetting("finalOnlyLeaderboard")}
+              label="Final-only visibility"
+              hint="Non-staff only see FINAL scores."
+            />
+            <Toggle
+              checked={data.settings.allowProvisionalForStaff}
+              onChange={() => toggleSetting("allowProvisionalForStaff")}
+              label="Staff can view provisional"
+              hint="Allows staff to see submitted/awaiting scores in final-only mode."
+            />
           </div>
         </div>
       </div>
@@ -1285,7 +1379,7 @@ export default function App() {
 
   /* ================================
      ROLE: Spectator
-================================ */
+  ================================ */
   function SpectatorView() {
     return (
       <div>
@@ -1296,337 +1390,402 @@ export default function App() {
 
         <div style={S.divider} />
 
-        <WorkoutsList readOnly />
-        <div style={S.divider} />
-        <LeaderboardPanel />
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <Field label="Leaderboard scope" style={{ width: 220 }}>
+            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
+          </Field>
+        </div>
+
+        <WorkoutsList />
+        <div style={{ marginTop: 12 }}>
+          <LeaderboardPanel />
+        </div>
       </div>
     );
   }
 
   /* ================================
      ROLE: Athlete / Team Manager
-================================ */
+  ================================ */
   function AthleteTeamView() {
     const myDivision = participantMeta.get(mySelection)?.division || "";
-
-    const mySubs = useMemo(() => {
-      const c = currentComp;
-      if (!c || !mySelection) return [];
-      const rows = [];
-      for (const w of c.workouts || []) {
-        const s = c.submissions?.[w.id]?.[mySelection];
-        if (s) rows.push({ workoutId: w.id, workoutName: w.name, ...s });
-      }
-      return rows;
-    }, [currentComp, mySelection]);
+    const myMembers = participantMeta.get(mySelection)?.members || [];
 
     return (
       <div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <Button variant={athleteView === "workouts" ? "primary" : "default"} onClick={() => setAthleteView("workouts")}>
-            Workouts
-          </Button>
-          <Button variant={athleteView === "submit" ? "primary" : "default"} onClick={() => setAthleteView("submit")}>
-            Submit Score
-          </Button>
-          <Button variant={athleteView === "my_submissions" ? "primary" : "default"} onClick={() => setAthleteView("my_submissions")}>
-            My Submissions
-          </Button>
-          <Button variant={athleteView === "leaderboard" ? "primary" : "default"} onClick={() => setAthleteView("leaderboard")}>
-            Leaderboard
-          </Button>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>
+              {role === "team_manager" ? "Team Manager" : "Athlete"} — {mode === "athlete" ? "Athletes" : "Teams"}
+            </div>
+            <div style={{ ...S.muted, marginTop: 4 }}>
+              Select {mode === "athlete" ? "athlete" : "team"}, view workouts (scaled by division), submit scores, and view your submissions.
+            </div>
+          </div>
 
-          <div style={{ marginLeft: "auto", minWidth: 280 }}>
-            <Field label={mode === "athlete" ? "Athlete" : "Team"}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <Field label={mode === "athlete" ? "Athlete" : "Team"} style={{ width: 240 }}>
               <Select value={mySelection} onChange={setMySelection} options={participantList.length ? participantList : ["—"]} />
             </Field>
+            <div style={S.pill}>
+              <strong>Division</strong>
+              <span style={{ opacity: 0.9 }}>{myDivision || "—"}</span>
+            </div>
           </div>
         </div>
 
+        {mode === "team" && myMembers?.length ? (
+          <div style={{ marginTop: 10, ...S.muted }}>
+            Team members: <span style={{ opacity: 0.95 }}>{myMembers.join(", ")}</span>
+          </div>
+        ) : null}
+
         <div style={S.divider} />
 
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <Button variant={athleteView === "workouts" ? "primary" : "default"} onClick={() => setAthleteView("workouts")} type="button">
+            Workouts
+          </Button>
+          <Button variant={athleteView === "submit" ? "primary" : "default"} onClick={() => setAthleteView("submit")} type="button">
+            Submit Score
+          </Button>
+          <Button
+            variant={athleteView === "my_submissions" ? "primary" : "default"}
+            onClick={() => setAthleteView("my_submissions")}
+            type="button"
+          >
+            My Submissions
+          </Button>
+          <Button
+            variant={athleteView === "leaderboard" ? "primary" : "default"}
+            onClick={() => setAthleteView("leaderboard")}
+            type="button"
+          >
+            Leaderboard
+          </Button>
+
+          <div style={{ flex: 1 }} />
+
+          <Field label="Leaderboard scope" style={{ width: 220 }}>
+            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
+          </Field>
+        </div>
+
         {athleteView === "workouts" ? <WorkoutsList division={myDivision} /> : null}
-
         {athleteView === "submit" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Submit an online score</div>
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Submit an online score</div>
             <div style={{ ...S.muted, marginTop: 6 }}>
-              Only submit while workout is LIVE and submissions are open. Division: <strong>{myDivision || "—"}</strong>
+              Submissions must be within the workout live window. Value format depends on workout (e.g. time as mm:ss).
             </div>
 
-            <div style={S.divider} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+              <Field label="Workout">
+                <Select
+                  value={submitDraft.workoutId}
+                  onChange={(v) => setSubmitDraft((d) => ({ ...d, workoutId: v }))}
+                  options={(currentComp.workouts || []).map((w) => ({ value: w.id, label: w.name }))}
+                />
+              </Field>
 
-            <div style={{ ...S.card, padding: 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                <Field label="Workout">
-                  <Select
-                    value={submitDraft.workoutId}
-                    onChange={(v) => setSubmitDraft((d) => ({ ...d, workoutId: v }))}
-                    options={(currentComp.workouts || []).map((w) => w.id)}
-                  />
-                </Field>
+              <Field label="Score value">
+                <input
+                  style={S.input}
+                  value={submitDraft.value}
+                  onChange={(e) => setSubmitDraft((d) => ({ ...d, value: e.target.value }))}
+                  placeholder="e.g. 08:44 (time) or 110 (kg) or 245 (reps)"
+                />
+              </Field>
 
-                <Field label="Score (number)">
-                  <input
-                    style={S.input}
-                    value={submitDraft.value}
-                    onChange={(e) => setSubmitDraft((d) => ({ ...d, value: e.target.value }))}
-                    placeholder="e.g. 542"
-                  />
-                </Field>
+              <Field label="Video URL (optional)" style={{ gridColumn: "1 / -1" }}>
+                <input
+                  style={S.input}
+                  value={submitDraft.videoUrl}
+                  onChange={(e) => setSubmitDraft((d) => ({ ...d, videoUrl: e.target.value }))}
+                  placeholder="Paste a video link"
+                />
+              </Field>
 
-                <Field label="Video URL (optional)">
-                  <input
-                    style={S.input}
-                    value={submitDraft.videoUrl}
-                    onChange={(e) => setSubmitDraft((d) => ({ ...d, videoUrl: e.target.value }))}
-                    placeholder="https://..."
-                  />
-                </Field>
+              <Field label="Notes (optional)" style={{ gridColumn: "1 / -1" }}>
+                <textarea
+                  style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                  value={submitDraft.notes}
+                  onChange={(e) => setSubmitDraft((d) => ({ ...d, notes: e.target.value }))}
+                  placeholder="Anything the judge should know..."
+                />
+              </Field>
+            </div>
 
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <Field label="Notes (optional)">
-                    <input
-                      style={S.input}
-                      value={submitDraft.notes}
-                      onChange={(e) => setSubmitDraft((d) => ({ ...d, notes: e.target.value }))}
-                      placeholder="Anything the judge should know…"
-                    />
-                  </Field>
-                </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <Button variant="primary" onClick={submitOnlineScore} type="button">
+                Submit
+              </Button>
+              <div style={{ ...S.muted, marginLeft: 6 }}>
+                {submissionsClosed ? "Submissions are closed." : "Submissions are open."}{" "}
+                {(() => {
+                  const w = (currentComp.workouts || []).find((x) => x.id === submitDraft.workoutId);
+                  if (!w) return null;
+                  return `• ${workoutLiveLabel(w)}`;
+                })()}
               </div>
-
-              <div style={{ height: 12 }} />
-
-              <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap", alignItems: "center" }}>
-                <div style={S.muted}>
-                  Workout status:{" "}
-                  <strong>
-                    {(() => {
-                      const w = currentComp.workouts.find((x) => x.id === submitDraft.workoutId);
-                      return w ? workoutLiveLabel(w) : "—";
-                    })()}
-                  </strong>
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Button variant="primary" onClick={submitOnlineScore} disabled={!mySelection || !submitDraft.workoutId}>
-                    Submit
-                  </Button>
-                  <Button onClick={() => setSubmitDraft((d) => ({ ...d, value: String(Math.floor(Math.random() * 300) + 1) }))}>
-                    Random demo score
-                  </Button>
-                </div>
-              </div>
-
-              {submissionsClosed ? (
-                <div style={{ ...S.muted, marginTop: 10 }}>
-                  Submissions are currently <strong>closed</strong> by the organiser.
-                </div>
-              ) : null}
             </div>
           </div>
         ) : null}
 
-        {athleteView === "my_submissions" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>My submissions ({mySelection || "—"})</div>
-            <div style={S.divider} />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-              {mySubs.map((s) => (
-                <div key={s.workoutId} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>{s.workoutName}</div>
-                  <div style={S.muted}>
-                    Submitted: {prettyDateTime(s.submittedAt)} • Status: <strong>{s.status}</strong>
-                  </div>
-                  <div style={{ height: 8 }} />
-                  <div style={{ fontWeight: 900 }}>Score: {s.value}</div>
-
-                  {s.videoUrl ? (
-                    <div style={{ ...S.muted, marginTop: 6 }}>
-                      Video:{" "}
-                      <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#bfe7ff" }}>
-                        Open
-                      </a>
-                    </div>
-                  ) : null}
-
-                  {s.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: “{s.judgeNote}”</div> : null}
-                  {s.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Your note: “{s.notes}”</div> : null}
-                </div>
-              ))}
-              {mySubs.length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No submissions yet.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Go to “Submit Score” to add your first entry.</div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
+        {athleteView === "my_submissions" ? <MySubmissionsPanel participant={mySelection} /> : null}
         {athleteView === "leaderboard" ? <LeaderboardPanel /> : null}
+      </div>
+    );
+  }
+
+  function MySubmissionsPanel({ participant }) {
+    const c = currentComp;
+    const rows = (c.workouts || []).map((w) => {
+      const sub = c.submissions?.[w.id]?.[participant];
+      const eff = getEffectiveScore(w.id, participant);
+      return {
+        workoutId: w.id,
+        workoutName: w.name,
+        submittedAt: sub?.submittedAt || "",
+        submittedValue: sub?.value ?? null,
+        status: sub?.status || "none",
+        effectiveValue: eff.value,
+        effectiveStatus: eff.status,
+        judgeNote: sub?.judgeNote || "",
+      };
+    });
+
+    return (
+      <div style={{ ...S.card, padding: 12 }}>
+        <div style={{ fontWeight: 900, fontSize: 15 }}>My Submissions</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Shows your submitted score, plus effective score (final `{'>'}` awaiting `{'>'}` submission).</div>
+
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Workout</th>
+                <th style={S.th}>Submitted</th>
+                <th style={S.th}>Submitted at</th>
+                <th style={S.th}>Effective</th>
+                <th style={S.th}>Status</th>
+                <th style={S.th}>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.workoutId}>
+                  <td style={S.td}>{r.workoutName}</td>
+                  <td style={S.td}>{r.submittedValue ?? "—"}</td>
+                  <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
+                  <td style={S.td}>{r.effectiveValue ?? "—"}</td>
+                  <td style={S.td}>
+                    <span style={S.tag}>{r.effectiveStatus}</span>
+                  </td>
+                  <td style={S.td}>
+                    <div style={S.muted}>{r.judgeNote || "—"}</div>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 ? (
+                <tr>
+                  <td style={S.td} colSpan={6}>
+                    <div style={S.muted}>No workouts.</div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
 
   /* ================================
      ROLE: Judge
-================================ */
+  ================================ */
   function JudgeView() {
+    const c = currentComp;
+
+    const myAdjustments = (c.adjustments || []).filter((a) => a.judgeName === judgeName);
+
     return (
       <div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <Button variant={judgeView === "review" ? "primary" : "default"} onClick={() => setJudgeView("review")}>
-            Review Submissions
-          </Button>
-          <Button variant={judgeView === "adjusted_queue" ? "primary" : "default"} onClick={() => setJudgeView("adjusted_queue")}>
-            Adjustments Sent
-          </Button>
-          <Button variant={judgeView === "leaderboard" ? "primary" : "default"} onClick={() => setJudgeView("leaderboard")}>
-            Leaderboard
-          </Button>
-
-          <div style={{ marginLeft: "auto", minWidth: 260 }}>
-            <Field label="Judge identity (demo)">
-              <Select value={judgeName} onChange={setJudgeName} options={currentComp.judgePool || ["Judge"]} />
-            </Field>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Judge</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>Review submissions and propose adjustments to Head Judge.</div>
           </div>
+
+          <Field label="Judge name" style={{ width: 240 }}>
+            <Select value={judgeName} onChange={setJudgeName} options={currentComp?.judgePool?.length ? currentComp.judgePool : ["Judge"]} />
+          </Field>
         </div>
 
         <div style={S.divider} />
 
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <Button variant={judgeView === "review" ? "primary" : "default"} onClick={() => setJudgeView("review")} type="button">
+            Review Submissions
+          </Button>
+          <Button
+            variant={judgeView === "adjusted_queue" ? "primary" : "default"}
+            onClick={() => setJudgeView("adjusted_queue")}
+            type="button"
+          >
+            Adjustments Sent ({myAdjustments.length})
+          </Button>
+          <Button variant={judgeView === "leaderboard" ? "primary" : "default"} onClick={() => setJudgeView("leaderboard")} type="button">
+            Leaderboard
+          </Button>
+
+          <div style={{ flex: 1 }} />
+
+          <Field label="Leaderboard scope" style={{ width: 220 }}>
+            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
+          </Field>
+        </div>
+
         {judgeView === "review" ? (
           <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Submission review</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Select a submission → adjust score → send to Head Judge to confirm.</div>
-
-            <div style={S.divider} />
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-              <Field label="Search">
-                <input
-                  style={{ ...S.input, width: 260 }}
-                  value={judgeFilter.q}
-                  onChange={(e) => setJudgeFilter((f) => ({ ...f, q: e.target.value }))}
-                  placeholder="participant, workout…"
-                />
-              </Field>
-
-              <Field label="Workout">
-                <Select
-                  value={judgeFilter.workoutId}
-                  onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
-                  options={["all", ...(currentComp.workouts || []).map((w) => w.id)]}
-                  style={{ width: 240 }}
-                />
-              </Field>
-
-              <Field label="Division">
-                <Select
-                  value={judgeFilter.division}
-                  onChange={(v) => setJudgeFilter((f) => ({ ...f, division: v }))}
-                  options={["all", ...compDivisions]}
-                  style={{ width: 200 }}
-                />
-              </Field>
-
-              <Field label="Status">
-                <Select
-                  value={judgeFilter.status}
-                  onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
-                  options={["all", "submitted", "needs_change"]}
-                  style={{ width: 180 }}
-                />
-              </Field>
-
-              <Button onClick={() => setJudgeFilter({ q: "", workoutId: "all", status: "submitted", division: "all" })} style={{ marginLeft: "auto" }}>
-                Clear
-              </Button>
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>Filters</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
+                <Field label="Search">
+                  <input
+                    style={S.input}
+                    value={judgeFilter.q}
+                    onChange={(e) => setJudgeFilter((f) => ({ ...f, q: e.target.value }))}
+                    placeholder="Name, workout, notes..."
+                  />
+                </Field>
+                <Field label="Workout">
+                  <Select
+                    value={judgeFilter.workoutId}
+                    onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
+                    options={[
+                      { value: "all", label: "All" },
+                      ...(currentComp.workouts || []).map((w) => ({ value: w.id, label: w.name })),
+                    ]}
+                  />
+                </Field>
+                <Field label="Status">
+                  <Select
+                    value={judgeFilter.status}
+                    onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
+                    options={[
+                      { value: "all", label: "All" },
+                      { value: "submitted", label: "Submitted" },
+                      { value: "adjusted", label: "Adjusted (proposed)" },
+                      { value: "final", label: "Final" },
+                    ]}
+                  />
+                </Field>
+                <Field label="Division">
+                  <Select
+                    value={judgeFilter.division}
+                    onChange={(v) => setJudgeFilter((f) => ({ ...f, division: v }))}
+                    options={[{ value: "all", label: "All" }, ...compDivisions.map((d) => ({ value: d, label: d }))]}
+                  />
+                </Field>
+              </div>
             </div>
 
-            <div style={S.divider} />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-              {judgeFiltered.map((r) => (
-                <div key={`${r.workoutId}_${r.participant}`} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div>
-                      <div style={{ fontWeight: 900 }}>{r.participant}</div>
-                      <div style={S.muted}>
-                        {r.workoutName} • {r.division || "—"} • {prettyDateTime(r.submittedAt)}
-                      </div>
-                    </div>
-                    <span style={S.tag}>{r.status}</span>
-                  </div>
-
-                  <div style={{ height: 8 }} />
-                  <div style={{ fontWeight: 900 }}>Submitted score: {r.value}</div>
-
-                  {r.videoUrl ? (
-                    <div style={{ ...S.muted, marginTop: 6 }}>
-                      Video:{" "}
-                      <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#bfe7ff" }}>
-                        Open
-                      </a>
-                    </div>
+            <div style={{ marginTop: 12, overflowX: "auto" }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Submitted at</th>
+                    <th style={S.th}>Participant</th>
+                    <th style={S.th}>Division</th>
+                    <th style={S.th}>Workout</th>
+                    <th style={S.th}>Value</th>
+                    <th style={S.th}>Notes</th>
+                    <th style={S.th}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {judgeFiltered.map((r) => (
+                    <tr key={`${r.workoutId}_${r.participant}`}>
+                      <td style={S.td}>{r.submittedAt ? prettyDateTime(r.submittedAt) : "—"}</td>
+                      <td style={S.td}>
+                        <div style={{ fontWeight: 900 }}>{r.participant}</div>
+                        {r.videoUrl ? <div style={S.muted}>Video: {r.videoUrl}</div> : null}
+                      </td>
+                      <td style={S.td}>{r.division || "—"}</td>
+                      <td style={S.td}>{r.workoutName}</td>
+                      <td style={S.td}>
+                        <span style={S.tag}>{r.value ?? "—"}</span>
+                        <div style={{ ...S.muted, marginTop: 6 }}>{r.status}</div>
+                      </td>
+                      <td style={S.td}>
+                        <div style={S.muted}>{r.notes || "—"}</div>
+                        {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: {r.judgeNote}</div> : null}
+                      </td>
+                      <td style={S.td}>
+                        <Button variant="primary" onClick={() => startAdjust(r)} type="button">
+                          Propose adjustment
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                  {judgeFiltered.length === 0 ? (
+                    <tr>
+                      <td style={S.td} colSpan={7}>
+                        <div style={S.muted}>No submissions match your filters.</div>
+                      </td>
+                    </tr>
                   ) : null}
-
-                  {r.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Athlete note: “{r.notes}”</div> : null}
-
-                  <div style={S.divider} />
-
-                  <Button variant="primary" onClick={() => startAdjust(r)}>
-                    Adjust / Send to Head Judge
-                  </Button>
-                </div>
-              ))}
-
-              {judgeFiltered.length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No submissions match your filters.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Athlete and submit some demo scores to populate this list.</div>
-                </div>
-              ) : null}
+                </tbody>
+              </table>
             </div>
 
             {adjustDraft.workoutId ? (
-              <div style={{ ...S.card, marginTop: 12, padding: 12 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Adjust score</div>
-                <div style={S.muted}>
-                  Participant: <strong>{adjustDraft.participant}</strong> • Workout:{" "}
-                  <strong>{currentComp.workouts.find((w) => w.id === adjustDraft.workoutId)?.name || adjustDraft.workoutId}</strong>
+              <div style={{ ...S.card, padding: 12, marginTop: 12 }}>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>Propose adjustment</div>
+                <div style={{ ...S.muted, marginTop: 6 }}>
+                  Sends to Head Judge for approval. Until approved, leaderboard shows “awaiting” to staff (depending on settings).
                 </div>
 
-                <div style={{ height: 10 }} />
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  <Field label="Adjusted value (number)">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+                  <Field label="Participant">
+                    <input style={S.input} value={adjustDraft.participant} readOnly />
+                  </Field>
+                  <Field label="Workout">
+                    <input
+                      style={S.input}
+                      value={(currentComp.workouts || []).find((w) => w.id === adjustDraft.workoutId)?.name || adjustDraft.workoutId}
+                      readOnly
+                    />
+                  </Field>
+                  <Field label="Adjusted value" style={{ gridColumn: "1 / -1" }}>
                     <input
                       style={S.input}
                       value={adjustDraft.adjustedValue}
                       onChange={(e) => setAdjustDraft((d) => ({ ...d, adjustedValue: e.target.value }))}
-                      placeholder="e.g. 512"
+                      placeholder="e.g. 09:12 or 105"
                     />
                   </Field>
-                  <Field label="Judge note (optional)">
-                    <input
-                      style={S.input}
+                  <Field label="Reason / note (optional)" style={{ gridColumn: "1 / -1" }}>
+                    <textarea
+                      style={{ ...S.input, minHeight: 90, resize: "vertical" }}
                       value={adjustDraft.note}
                       onChange={(e) => setAdjustDraft((d) => ({ ...d, note: e.target.value }))}
-                      placeholder="e.g. 2 no-reps"
+                      placeholder="Explain the adjustment (no-reps, standards, missing rep, etc.)"
                     />
                   </Field>
                 </div>
 
-                <div style={{ height: 10 }} />
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  <Button onClick={() => setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" })}>
-                    Cancel
-                  </Button>
-                  <Button variant="primary" onClick={saveAdjustment}>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                  <Button variant="primary" onClick={saveAdjustment} type="button">
                     Send to Head Judge
+                  </Button>
+                  <Button
+                    variant="default"
+                    onClick={() => setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" })}
+                    type="button"
+                  >
+                    Cancel
                   </Button>
                 </div>
               </div>
@@ -1635,33 +1794,51 @@ export default function App() {
         ) : null}
 
         {judgeView === "adjusted_queue" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Adjustments you’ve sent</div>
-            <div style={S.divider} />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-              {(currentComp.adjustments || []).filter((a) => a.judgeName === judgeName).map((a) => (
-                <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div>
-                      <div style={{ fontWeight: 900 }}>{a.participant}</div>
-                      <div style={S.muted}>
-                        {a.workoutName} • {a.division || "—"} • {prettyDateTime(a.adjustedAt)}
-                      </div>
-                    </div>
-                    <span style={S.tag}>{a.status}</span>
-                  </div>
-                  <div style={{ height: 8 }} />
-                  <div style={{ fontWeight: 900 }}>Original: {a.originalValue} → Adjusted: {a.adjustedValue}</div>
-                  {a.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Note: “{a.judgeNote}”</div> : null}
-                  {a.headJudgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>HJ note: “{a.headJudgeNote}”</div> : null}
-                </div>
-              ))}
-              {(currentComp.adjustments || []).filter((a) => a.judgeName === judgeName).length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No adjustments sent yet.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Go to “Review Submissions” and adjust a score.</div>
-                </div>
-              ) : null}
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Adjustments sent</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Track the adjustments you’ve proposed and their status.</div>
+
+            <div style={{ overflowX: "auto", marginTop: 10 }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Created</th>
+                    <th style={S.th}>Participant</th>
+                    <th style={S.th}>Workout</th>
+                    <th style={S.th}>Adjusted value</th>
+                    <th style={S.th}>Status</th>
+                    <th style={S.th}>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {myAdjustments.map((a) => (
+                    <tr key={a.id}>
+                      <td style={S.td}>{prettyDateTime(a.createdAt)}</td>
+                      <td style={S.td}>{a.participant}</td>
+                      <td style={S.td}>{(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}</td>
+                      <td style={S.td}>
+                        <span style={S.tag}>{a.adjustedValue}</span>
+                      </td>
+                      <td style={S.td}>
+                        <span style={S.tag}>{a.status}</span>
+                      </td>
+                      <td style={S.td}>
+                        <div style={S.muted}>{a.note || "—"}</div>
+                        {a.status === "rejected" ? (
+                          <div style={{ ...S.muted, marginTop: 6 }}>Rejected: {a.rejectReason || "—"}</div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                  {myAdjustments.length === 0 ? (
+                    <tr>
+                      <td style={S.td} colSpan={6}>
+                        <div style={S.muted}>No adjustments yet.</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </div>
         ) : null}
@@ -1673,82 +1850,91 @@ export default function App() {
 
   /* ================================
      ROLE: Head Judge
-================================ */
+  ================================ */
   function HeadJudgeView() {
-    const [rejectNote, setRejectNote] = useState("");
-
     return (
       <div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <Button variant={headJudgeView === "confirm" ? "primary" : "default"} onClick={() => setHeadJudgeView("confirm")}>
-            Confirm Adjustments
-          </Button>
-          <Button variant={headJudgeView === "leaderboard" ? "primary" : "default"} onClick={() => setHeadJudgeView("leaderboard")}>
-            Leaderboard
-          </Button>
-          <Button variant={headJudgeView === "audit" ? "primary" : "default"} onClick={() => setHeadJudgeView("audit")}>
-            Audit
-          </Button>
-
-          <div style={{ marginLeft: "auto", minWidth: 260 }}>
-            <Field label="Head Judge identity (demo)">
-              <Select value={headJudgeName} onChange={setHeadJudgeName} options={currentComp.headJudgePool || ["Head Judge"]} />
-            </Field>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Head Judge</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>Approve/reject judge adjustments to write FINAL scores.</div>
           </div>
+
+          <Field label="Head Judge name" style={{ width: 240 }}>
+            <Select
+              value={headJudgeName}
+              onChange={setHeadJudgeName}
+              options={currentComp?.headJudgePool?.length ? currentComp.headJudgePool : ["Head Judge"]}
+            />
+          </Field>
         </div>
 
         <div style={S.divider} />
 
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <Button variant={headJudgeView === "confirm" ? "primary" : "default"} onClick={() => setHeadJudgeView("confirm")} type="button">
+            Confirm Adjustments ({awaitingAdjustments.length})
+          </Button>
+          <Button
+            variant={headJudgeView === "leaderboard" ? "primary" : "default"}
+            onClick={() => setHeadJudgeView("leaderboard")}
+            type="button"
+          >
+            Leaderboard
+          </Button>
+          <Button variant={headJudgeView === "audit" ? "primary" : "default"} onClick={() => setHeadJudgeView("audit")} type="button">
+            Audit
+          </Button>
+
+          <div style={{ flex: 1 }} />
+
+          <Field label="Leaderboard scope" style={{ width: 220 }}>
+            <Select value={lbDivision} onChange={setLbDivision} options={["Overall", ...compDivisions]} />
+          </Field>
+        </div>
+
         {headJudgeView === "confirm" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Adjusted scores awaiting confirmation</div>
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Awaiting confirmation</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Approve to set final score. Reject to return to submitted state with a note.</div>
 
-            <div style={S.divider} />
+            <Field label="Reject note (optional)" style={{ marginTop: 10 }}>
+              <input style={S.input} value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="Reason for rejection..." />
+            </Field>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
               {awaitingAdjustments.map((a) => (
                 <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                     <div>
-                      <div style={{ fontWeight: 900 }}>{a.participant}</div>
-                      <div style={S.muted}>
-                        {a.workoutName} • {a.division || "—"} • Judge: <strong>{a.judgeName}</strong> • {prettyDateTime(a.adjustedAt)}
+                      <div style={{ fontWeight: 950 }}>
+                        {a.participant} • {(currentComp.workouts || []).find((w) => w.id === a.workoutId)?.name || a.workoutId}
                       </div>
+                      <div style={{ ...S.muted, marginTop: 4 }}>
+                        Proposed by {a.judgeName} at {prettyDateTime(a.createdAt)}
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <span style={S.tag}>Adjusted: {a.adjustedValue}</span>
+                      </div>
+                      {a.note ? <div style={{ ...S.muted, marginTop: 8 }}>Note: {a.note}</div> : null}
                     </div>
-                    <span style={S.tag}>awaiting</span>
+
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <Button variant="primary" onClick={() => confirmAdjustment(a.id)} type="button">
+                        Approve FINAL
+                      </Button>
+                      <Button variant="danger" onClick={() => rejectAdjustment(a.id)} type="button">
+                        Reject
+                      </Button>
+                    </div>
                   </div>
-
-                  <div style={{ height: 8 }} />
-                  <div style={{ fontWeight: 900 }}>Original: {a.originalValue} → Adjusted: {a.adjustedValue}</div>
-                  {a.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: “{a.judgeNote}”</div> : null}
-
-                  <div style={S.divider} />
-
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <Button variant="primary" onClick={() => confirmAdjustment(a.id)}>
-                      Confirm -> Final
-                    </Button>
-                    <Button variant="danger" onClick={() => rejectAdjustment(a.id, rejectNote || "Rejected — please resubmit with clearer evidence.")}>
-                      Reject
-                    </Button>
-                  </div>
-
-                  <div style={{ height: 10 }} />
-                  <Field label="Reject note (applies to Reject)">
-                    <input
-                      style={S.input}
-                      value={rejectNote}
-                      onChange={(e) => setRejectNote(e.target.value)}
-                      placeholder="e.g. Video angle unclear; resubmit…"
-                    />
-                  </Field>
                 </div>
               ))}
 
               {awaitingAdjustments.length === 0 ? (
                 <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No adjustments awaiting confirmation.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Judge and adjust a submission to populate this list.</div>
+                  <div style={{ fontWeight: 900 }}>No pending adjustments.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Judges can propose adjustments from their view.</div>
                 </div>
               ) : null}
             </div>
@@ -1756,175 +1942,101 @@ export default function App() {
         ) : null}
 
         {headJudgeView === "leaderboard" ? <LeaderboardPanel /> : null}
-
-        {headJudgeView === "audit" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
-            <div style={S.divider} />
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {(currentComp.audit || []).map((a) => (
-                <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>{a.message}</div>
-                    <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
-                  </div>
-                </div>
-              ))}
-              {(currentComp.audit || []).length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Submit/adjust/confirm scores to generate audit.</div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
+        {headJudgeView === "audit" ? <AuditPanel /> : null}
       </div>
     );
   }
 
   /* ================================
      ROLE: Organiser
-================================ */
+  ================================ */
   function OrganiserView() {
     return (
       <div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <Button variant={orgView === "workouts" ? "primary" : "default"} onClick={() => setOrgView("workouts")}>
-            Workouts + Scaling
-          </Button>
-          <Button variant={orgView === "schedule" ? "primary" : "default"} onClick={() => setOrgView("schedule")}>
-            Scheduling
-          </Button>
-          <Button variant={orgView === "controls" ? "primary" : "default"} onClick={() => setOrgView("controls")}>
-            Controls
-          </Button>
-          <Button variant={orgView === "audit" ? "primary" : "default"} onClick={() => setOrgView("audit")}>
-            Audit
-          </Button>
-
-          <div style={{ marginLeft: "auto" }}>
-            <Button variant="primary" onClick={openNewWorkout}>
-              + Add workout
-            </Button>
-          </div>
-        </div>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Organiser</div>
+        <div style={{ ...S.muted, marginTop: 4 }}>Edit workouts/scaling, manage live windows and visibility controls.</div>
 
         <div style={S.divider} />
 
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <Button variant={orgView === "workouts" ? "primary" : "default"} onClick={() => setOrgView("workouts")} type="button">
+            Workouts + Scaling
+          </Button>
+          <Button variant={orgView === "schedule" ? "primary" : "default"} onClick={() => setOrgView("schedule")} type="button">
+            Scheduling
+          </Button>
+          <Button variant={orgView === "controls" ? "primary" : "default"} onClick={() => setOrgView("controls")} type="button">
+            Controls
+          </Button>
+          <Button variant={orgView === "audit" ? "primary" : "default"} onClick={() => setOrgView("audit")} type="button">
+            Audit
+          </Button>
+
+          <div style={{ flex: 1 }} />
+
+          <Button variant="primary" onClick={openNewWorkout} type="button">
+            + New workout
+          </Button>
+        </div>
+
         {orgView === "workouts" ? (
           <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout builder + scaling</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Edit base workout + per-division overrides.</div>
-
-            <div style={S.divider} />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-              {(currentComp.workouts || []).map((w) => (
-                <div key={w.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div>
-                      <div style={{ fontWeight: 900 }}>{w.name}</div>
-                      <div style={S.muted}>
-                        {w.scoreType} • cap {w.cap} • {workoutLiveLabel(w)}
-                      </div>
-                    </div>
-                    <span style={S.tag}>{w.id}</span>
-                  </div>
-
-                  <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <span style={S.tag}>sort: {w.sort}</span>
-                    <span style={S.tag}>unit: {w.unit}</span>
-                    <span style={S.tag}>scales: {Object.keys(w.scalingByDivision || {}).length}</span>
-                  </div>
-
-                  <div style={S.divider} />
-
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <Button variant="primary" onClick={() => openEditWorkout(w)}>Edit</Button>
-                    <Button
-                      variant="danger"
-                      onClick={() => {
-                        if (window.confirm(`Delete workout "${w.name}"?`)) deleteWorkout(w.id);
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {workoutEditor ? (
-              <WorkoutEditorModal
-                editor={workoutEditor}
-                divisions={compDivisions}
-                onClose={() => setWorkoutEditor(null)}
-                onSave={saveWorkout}
-              />
-            ) : null}
+            <div style={{ ...S.muted, marginBottom: 10 }}>Tip: open a workout to add division-specific scaling overrides.</div>
+            <WorkoutsList allowEdit />
           </div>
         ) : null}
 
-        {orgView === "schedule" ? (
-          <SchedulePanel />
-        ) : null}
-
-        {orgView === "controls" ? (
-          <ControlsPanel />
-        ) : null}
-
-        {orgView === "audit" ? (
-          <AuditPanel />
-        ) : null}
+        {orgView === "schedule" ? <SchedulePanel /> : null}
+        {orgView === "controls" ? <ControlsPanel /> : null}
+        {orgView === "audit" ? <AuditPanel /> : null}
       </div>
     );
   }
 
   function SchedulePanel() {
     return (
-      <div>
+      <div style={{ ...S.card, padding: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time).</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time). Athletes can only submit while live.</div>
 
-        <div style={S.divider} />
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
           {(currentComp.workouts || []).map((w) => (
             <div key={w.id} style={{ ...S.card, padding: 12 }}>
-              <div style={{ fontWeight: 900 }}>{w.name}</div>
-              <div style={S.muted}>{workoutLiveLabel(w)}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ fontWeight: 900 }}>{w.name}</div>
+                <div style={S.tag}>{workoutLiveLabel(w)}</div>
+              </div>
 
-              <div style={{ height: 10 }} />
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Field label="Open at">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
+                <Field label="Opens">
                   <input
                     style={S.input}
                     type="datetime-local"
                     value={isoToLocalInput(w.liveWindow?.openAt)}
                     onChange={(e) => {
-                      const openIso = localInputToIso(e.target.value);
+                      const iso = localInputToIso(e.target.value);
                       updateComp(currentComp.id, (c) => {
-                        const ww = c.workouts.find((x) => x.id === w.id);
+                        const ww = (c.workouts || []).find((x) => x.id === w.id);
+                        if (!ww) return c;
                         ww.liveWindow = ww.liveWindow || {};
-                        ww.liveWindow.openAt = openIso;
+                        ww.liveWindow.openAt = iso;
                         return c;
                       });
                     }}
                   />
                 </Field>
-                <Field label="Close at">
+                <Field label="Closes">
                   <input
                     style={S.input}
                     type="datetime-local"
                     value={isoToLocalInput(w.liveWindow?.closeAt)}
                     onChange={(e) => {
-                      const closeIso = localInputToIso(e.target.value);
+                      const iso = localInputToIso(e.target.value);
                       updateComp(currentComp.id, (c) => {
-                        const ww = c.workouts.find((x) => x.id === w.id);
+                        const ww = (c.workouts || []).find((x) => x.id === w.id);
+                        if (!ww) return c;
                         ww.liveWindow = ww.liveWindow || {};
-                        ww.liveWindow.closeAt = closeIso;
+                        ww.liveWindow.closeAt = iso;
                         return c;
                       });
                     }}
@@ -1940,105 +2052,70 @@ export default function App() {
 
   function ControlsPanel() {
     return (
-      <div>
+      <div style={{ ...S.card, padding: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
-        <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, final-only visibility.</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Visibility + submission gates.</div>
 
-        <div style={S.divider} />
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-          <div style={{ ...S.card, padding: 12 }}>
-            <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
-            <div style={{ height: 10 }} />
-            <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
-            <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.finalOnlyLeaderboard}
-              onChange={() => toggleSetting("finalOnlyLeaderboard")}
-              label="Final-only leaderboard (non-staff)"
-              hint="Staff can still see provisional if allowed."
-            />
-            <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.allowProvisionalForStaff}
-              onChange={() => toggleSetting("allowProvisionalForStaff")}
-              label="Allow provisional for staff"
-            />
-          </div>
-
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>Quick demo actions</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Populate data fast for screenshots.</div>
-            <div style={{ height: 10 }} />
-            <Button
-              variant="primary"
-              onClick={() => {
-                const w = currentComp.workouts?.[0];
-                if (!w) return;
-                updateComp(currentComp.id, (c) => {
-                  c.submissions = c.submissions || {};
-                  c.submissions[w.id] = c.submissions[w.id] || {};
-                  const participants =
-                    mode === "athlete"
-                      ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division }))
-                      : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
-                  participants.forEach((p) => {
-                    c.submissions[w.id][p.name] = {
-                      value: Math.floor(Math.random() * 300) + 1,
-                      videoUrl: "",
-                      notes: "Auto-generated demo submission",
-                      submittedAt: new Date().toISOString(),
-                      status: "submitted",
-                      judgeNote: "",
-                      division: p.division,
-                    };
-                  });
-                  return c;
-                });
-                addAudit(`Organiser generated random demo submissions for ${currentComp.workouts?.[0]?.name}`);
-                showToast("ok", "Random submissions generated for workout 1.");
-              }}
-            >
-              Generate submissions (workout 1)
-            </Button>
-            <div style={{ height: 10 }} />
-            <Button
-              onClick={() => {
-                updateComp(currentComp.id, (c) => {
-                  c.submissions = {};
-                  c.adjustments = [];
-                  c.finalScores = {};
-                  return c;
-                });
-                addAudit("Organiser cleared all submissions/adjustments/final scores");
-                showToast("ok", "Cleared all qualifier scoring data.");
-              }}
-            >
-              Clear qualifier data
-            </Button>
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
+          <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
+          <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
+          <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only visibility" />
+          <Toggle
+            checked={data.settings.allowProvisionalForStaff}
+            onChange={() => toggleSetting("allowProvisionalForStaff")}
+            label="Staff can view provisional"
+          />
         </div>
 
         <div style={S.divider} />
-        <LeaderboardPanel />
+
+        <div style={{ fontWeight: 900 }}>Admin actions</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+          <Button variant="default" onClick={exportAll} type="button">
+            Export JSON
+          </Button>
+          <Button variant="default" onClick={() => fileInputRef.current?.click()} type="button">
+            Import JSON
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const res = await importJson(f);
+              if (!res.ok) showToast("warn", res.error);
+              else showToast("ok", "Imported.");
+              e.target.value = "";
+            }}
+          />
+          <Button variant="danger" onClick={resetDemo} type="button">
+            Reset demo
+          </Button>
+        </div>
       </div>
     );
   }
 
   function AuditPanel() {
     return (
-      <div>
+      <div style={{ ...S.card, padding: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
-        <div style={S.divider} />
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ ...S.muted, marginTop: 6 }}>Shows key demo actions (submissions, adjustments, finals, workout edits).</div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 12 }}>
           {(currentComp.audit || []).map((a) => (
             <div key={a.id} style={{ ...S.card, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 900 }}>{a.message}</div>
-                <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
+                <div style={{ fontWeight: 900 }}>{prettyDateTime(a.at)}</div>
+                <div style={S.tag}>{a.whoRole}</div>
               </div>
+              <div style={{ marginTop: 8 }}>{a.message}</div>
             </div>
           ))}
+
           {(currentComp.audit || []).length === 0 ? (
             <div style={{ ...S.card, padding: 12 }}>
               <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
@@ -2052,61 +2129,76 @@ export default function App() {
 
   /* ================================
      COMMON: Workouts List
-================================ */
-  function WorkoutsList({ readOnly = false, division = "" }) {
+  ================================ */
+  function WorkoutsList({ division = "", allowEdit = false }) {
+    const list = currentComp.workouts || [];
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
-        {(currentComp.workouts || []).map((wBase) => {
+        {list.map((wBase) => {
           const w = division ? workoutForDivision(wBase, division) : wBase;
           const scaled = !!(division && wBase.scalingByDivision?.[division]);
+
           return (
             <div key={wBase.id} style={{ ...S.card, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                 <div>
                   <div style={{ fontWeight: 900, fontSize: 15 }}>{w.name}</div>
-                  <div style={S.muted}>
-                    {w.scoreType} • cap {w.cap} • <strong>{workoutLiveLabel(wBase)}</strong>
+                  <div style={{ ...S.muted, marginTop: 4 }}>
+                    {w.scoreType} • {w.unit || "—"} • cap {w.cap || "—"} • {workoutLiveLabel(wBase)}
                     {division ? ` • division: ${division}` : ""}
                   </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+                    {scaled ? <span style={S.tag}>SCALED</span> : null}
+                    <span style={S.tag}>Sort: {isAscForWorkout(w) ? "ASC (lower wins)" : "DESC (higher wins)"}</span>
+                    {w.divisionNotes ? <span style={S.tag}>{w.divisionNotes}</span> : null}
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  {scaled ? <span style={S.tag}>SCALED</span> : null}
-                  <span style={S.tag}>{w.unit}</span>
-                </div>
-              </div>
 
-              <div style={{ height: 10 }} />
-              <div style={{ fontWeight: 900 }}>Description</div>
-              <div style={{ ...S.muted, marginTop: 4 }}>{w.description || "—"}</div>
-
-              <div style={{ height: 10 }} />
-              <div style={{ fontWeight: 900 }}>Standards</div>
-              <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18, opacity: 0.92 }}>
-                {(w.standards || []).slice(0, 8).map((s, i) => (
-                  <li key={i} style={{ fontSize: 13, marginBottom: 4 }}>{s}</li>
-                ))}
-                {(w.standards || []).length === 0 ? <li style={{ fontSize: 13, opacity: 0.7 }}>—</li> : null}
-              </ul>
-
-              <div style={{ height: 10 }} />
-              <div style={{ fontWeight: 900 }}>Equipment</div>
-              <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {(w.equipment || []).slice(0, 12).map((e) => (
-                  <span key={e} style={S.tag}>{e}</span>
-                ))}
-                {(w.equipment || []).length === 0 ? <span style={S.tag}>—</span> : null}
+                {allowEdit ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+                    <Button variant="primary" onClick={() => openEditWorkout(wBase)} type="button">
+                      Edit
+                    </Button>
+                    <Button variant="danger" onClick={() => deleteWorkout(wBase.id)} type="button">
+                      Delete
+                    </Button>
+                  </div>
+                ) : null}
               </div>
 
               <div style={S.divider} />
-              <div style={S.muted}>
-                Opens: <strong>{prettyDateTime(wBase.liveWindow?.openAt)}</strong><br />
-                Closes: <strong>{prettyDateTime(wBase.liveWindow?.closeAt)}</strong><br />
-                Tiebreak: <strong>{w.tiebreak || "—"}</strong>
-              </div>
 
-              {!readOnly && isAthleteSide ? (
+              {w.description ? <div style={{ whiteSpace: "pre-wrap" }}>{w.description}</div> : <div style={S.muted}>No description.</div>}
+
+              {w.equipment?.length ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Equipment</div>
+                  <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {w.equipment.map((x, i) => (
+                      <span key={`${x}_${i}`} style={S.tag}>
+                        {x}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {w.standards?.length ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Standards</div>
+                  <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
+                    {w.standards.map((x, i) => (
+                      <li key={`${x}_${i}`} style={{ ...S.muted, marginBottom: 4 }}>
+                        {x}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {w.tiebreak ? (
                 <div style={{ marginTop: 10, ...S.muted }}>
-                  Tip: go to <strong>Submit Score</strong> to enter your result.
+                  <strong style={{ opacity: 0.95 }}>Tiebreak:</strong> {w.tiebreak}
                 </div>
               ) : null}
             </div>
@@ -2118,7 +2210,7 @@ export default function App() {
 
   /* ================================
      COMMON: Leaderboard Panel (Points)
-================================ */
+  ================================ */
   function LeaderboardPanel() {
     if (leaderboardHidden) {
       return (
@@ -2129,74 +2221,69 @@ export default function App() {
       );
     }
 
-    const privileged = isStaff && staffCanSeeProvisional;
-    const showProvisional = !finalOnly || privileged;
-
-    const divisionOptions = ["Overall", ...compDivisions];
-
     return (
-      <div>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 15, fontWeight: 900 }}>
-            Leaderboard (Points) • {showProvisional ? "Provisional" : "Final-only (non-staff)"} • Mode: {mode}
+      <div style={{ ...S.card, padding: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>Leaderboard (Points)</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>
+              Each workout ranks participants; points = N - rank + 1. Missing/hidden score = 0 points. Scope: {lbDivision}.
+              {finalOnly && !isStaff ? " (final-only enabled)" : ""}
+            </div>
           </div>
-          <div style={S.muted}>
-            Points per workout: <strong>N - rank + 1</strong> • Missing scores = <strong>0</strong>
-          </div>
-        </div>
-
-        <div style={{ ...S.row, marginTop: 10, alignItems: "center" }}>
           <div style={S.pill}>
-            <strong>Division</strong>
-            <Select value={lbDivision} onChange={setLbDivision} options={divisionOptions} style={{ padding: "6px 8px", borderRadius: 999 }} />
-          </div>
-          <div style={{ ...S.muted, marginLeft: "auto" }}>
-            Showing <strong>{pointsLeaderboard.length}</strong> entries
+            <strong>Visible scores</strong>
+            <span style={{ opacity: 0.9 }}>{canSeeProvisional() ? "Provisional + Final" : "Final only"}</span>
           </div>
         </div>
 
-        <div style={S.divider} />
-
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
           <table style={S.table}>
             <thead>
               <tr>
                 <th style={S.th}>Rank</th>
                 <th style={S.th}>{mode === "athlete" ? "Athlete" : "Team"}</th>
                 <th style={S.th}>Division</th>
-                <th style={S.th}>Total Points</th>
+                <th style={S.th}>Total points</th>
                 {(currentComp.workouts || []).map((w) => (
-                  <th key={w.id} style={S.th}>{w.name}</th>
+                  <th key={w.id} style={S.th}>
+                    {w.name}
+                    <div style={S.muted}>pts / value</div>
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {pointsLeaderboard.map((r, idx) => (
-                <tr key={r.name}>
-                  <td style={S.td}><div style={{ fontWeight: 900 }}>{idx + 1}</div></td>
-                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.name}</div></td>
-                  <td style={S.td}>{r.division || "—"}</td>
-                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.totalPoints}</div></td>
+              {pointsLeaderboard.map((row, idx) => (
+                <tr key={row.name}>
+                  <td style={S.td}>
+                    <span style={S.tag}>{idx + 1}</span>
+                  </td>
+                  <td style={S.td}>
+                    <div style={{ fontWeight: 900 }}>{row.name}</div>
+                  </td>
+                  <td style={S.td}>{row.division || "—"}</td>
+                  <td style={S.td}>
+                    <span style={S.tag}>{row.totalPoints}</span>
+                  </td>
 
-                  {(currentComp.workouts || []).map((w) => {
-                    const cell = r.per[w.id] || { raw: 0, unit: w.unit, status: "0", points: 0, rank: null };
-                    return (
-                      <td key={w.id} style={S.td}>
-                        <div style={{ fontWeight: 900 }}>{cell.raw} {cell.unit}</div>
+                  {row.breakdown.map((b) => (
+                    <td key={b.workoutId} style={S.td}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={S.tag}>{b.points} pts</span>
                         <div style={S.muted}>
-                          pts: <strong>{cell.points}</strong>{cell.rank ? ` • r#${cell.rank}` : ""} • {cell.status}
+                          {b.value == null ? "—" : String(b.value)} • {b.status}
                         </div>
-                      </td>
-                    );
-                  })}
+                      </div>
+                    </td>
+                  ))}
                 </tr>
               ))}
 
               {pointsLeaderboard.length === 0 ? (
                 <tr>
-                  <td style={S.td} colSpan={4 + (currentComp.workouts || []).length}>
-                    <div style={{ fontWeight: 900 }}>No entries for this division yet.</div>
-                    <div style={{ ...S.muted, marginTop: 6 }}>Try “Overall” or submit scores for participants in this division.</div>
+                  <td style={S.td} colSpan={5 + (currentComp.workouts || []).length}>
+                    <div style={S.muted}>No participants in this scope.</div>
                   </td>
                 </tr>
               ) : null}
@@ -2208,17 +2295,38 @@ export default function App() {
   }
 
   /* ================================
-     WORKOUT EDITOR MODAL (includes scaling)
-================================ */
+     WORKOUT EDITOR MODAL
+  ================================ */
   function WorkoutEditorModal({ editor, onClose, onSave, divisions }) {
     const [draft, setDraft] = useState(editor.draft);
 
-    const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+    function setField(key, value) {
+      setDraft((d) => ({ ...d, [key]: value }));
+    }
 
-    function setScale(division, patch) {
+    function setScale(division, key, value) {
       setDraft((d) => {
         const next = { ...(d.scalingByDivision || {}) };
-        next[division] = { ...(next[division] || {}), ...patch };
+        next[division] = { ...(next[division] || {}) };
+        if (value === "" || value == null) {
+          // allow clearing specific fields by setting empty string
+          next[division][key] = "";
+        } else {
+          next[division][key] = value;
+        }
+        return { ...d, scalingByDivision: next };
+      });
+    }
+
+    function setScaleList(division, key, text) {
+      const arr = String(text || "")
+        .split("\n")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      setDraft((d) => {
+        const next = { ...(d.scalingByDivision || {}) };
+        next[division] = { ...(next[division] || {}) };
+        next[division][key] = arr;
         return { ...d, scalingByDivision: next };
       });
     }
@@ -2232,181 +2340,235 @@ export default function App() {
     }
 
     return (
-      <div
-        style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.55)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 18,
-          zIndex: 999,
-        }}
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <div style={{ ...S.card, width: "min(980px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontSize: 18, fontWeight: 950 }}>{editor.mode === "new" ? "Add Workout" : "Edit Workout"}</div>
-            <div style={S.muted}>Click outside to close</div>
+      <div style={S.modalBackdrop} onMouseDown={onClose}>
+        <div style={S.modal} onMouseDown={(e) => e.stopPropagation()}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ fontWeight: 950, fontSize: 16 }}>
+              {editor.mode === "edit" ? "Edit workout" : "New workout"}
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Button variant="default" onClick={onClose} type="button">
+                Close
+              </Button>
+              <Button variant="primary" onClick={() => onSave(draft)} type="button">
+                Save
+              </Button>
+            </div>
           </div>
 
           <div style={S.divider} />
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-            <Field label="Name">
-              <input style={S.input} value={draft.name} onChange={(e) => set("name", e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Workout name">
+              <input style={S.input} value={draft.name} onChange={(e) => setField("name", e.target.value)} />
             </Field>
 
             <Field label="Division notes">
-              <input style={S.input} value={draft.divisionNotes} onChange={(e) => set("divisionNotes", e.target.value)} />
+              <input style={S.input} value={draft.divisionNotes} onChange={(e) => setField("divisionNotes", e.target.value)} />
             </Field>
 
             <Field label="Score type">
-              <Select value={draft.scoreType} onChange={(v) => set("scoreType", v)} options={["time", "reps", "load", "points"]} />
-            </Field>
-
-            <Field label="Sort">
-              <Select value={draft.sort} onChange={(v) => set("sort", v)} options={["asc", "desc"]} />
-            </Field>
-
-            <Field label="Unit">
-              <input style={S.input} value={draft.unit} onChange={(e) => set("unit", e.target.value)} placeholder="sec / reps / kg / pts" />
-            </Field>
-
-            <Field label="Cap">
-              <input style={S.input} value={draft.cap} onChange={(e) => set("cap", e.target.value)} placeholder="e.g. 12:00" />
-            </Field>
-
-            <Field label="Tiebreak">
-              <input style={S.input} value={draft.tiebreak} onChange={(e) => set("tiebreak", e.target.value)} placeholder="Optional" />
-            </Field>
-
-            <Field label="Equipment (comma separated)">
-              <input
-                style={S.input}
-                value={(draft.equipment || []).join(", ")}
-                onChange={(e) => set("equipment", csvToArr(e.target.value))}
+              <Select
+                value={draft.scoreType}
+                onChange={(v) => setField("scoreType", v)}
+                options={[
+                  { value: "time", label: "time" },
+                  { value: "reps", label: "reps" },
+                  { value: "load", label: "load" },
+                  { value: "distance", label: "distance" },
+                  { value: "calories", label: "calories" },
+                ]}
               />
             </Field>
 
-            <div style={{ gridColumn: "1 / -1" }}>
-              <Field label="Description">
-                <textarea
-                  style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                  value={draft.description}
-                  onChange={(e) => set("description", e.target.value)}
-                />
-              </Field>
-            </div>
+            <Field label="Sort">
+              <Select value={draft.sort} onChange={(v) => setField("sort", v)} options={[{ value: "asc", label: "asc" }, { value: "desc", label: "desc" }]} />
+            </Field>
 
-            <div style={{ gridColumn: "1 / -1" }}>
-              <Field label="Standards (comma separated)">
-                <input
-                  style={S.input}
-                  value={(draft.standards || []).join(", ")}
-                  onChange={(e) => set("standards", csvToArr(e.target.value))}
-                />
-              </Field>
-            </div>
+            <Field label="Unit">
+              <input style={S.input} value={draft.unit} onChange={(e) => setField("unit", e.target.value)} placeholder="e.g. time (mm:ss), reps, kg" />
+            </Field>
+
+            <Field label="Cap">
+              <input style={S.input} value={draft.cap} onChange={(e) => setField("cap", e.target.value)} placeholder="e.g. 12:00" />
+            </Field>
+
+            <Field label="Tiebreak (optional)" style={{ gridColumn: "1 / -1" }}>
+              <input style={S.input} value={draft.tiebreak} onChange={(e) => setField("tiebreak", e.target.value)} />
+            </Field>
+
+            <Field label="Description" style={{ gridColumn: "1 / -1" }}>
+              <textarea
+                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
+                value={draft.description}
+                onChange={(e) => setField("description", e.target.value)}
+                placeholder="Workout details..."
+              />
+            </Field>
+
+            <Field label="Equipment (one per line)">
+              <textarea
+                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
+                value={(draft.equipment || []).join("\n")}
+                onChange={(e) =>
+                  setField(
+                    "equipment",
+                    e.target.value
+                      .split("\n")
+                      .map((x) => x.trim())
+                      .filter(Boolean)
+                  )
+                }
+              />
+            </Field>
+
+            <Field label="Standards (one per line)">
+              <textarea
+                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
+                value={(draft.standards || []).join("\n")}
+                onChange={(e) =>
+                  setField(
+                    "standards",
+                    e.target.value
+                      .split("\n")
+                      .map((x) => x.trim())
+                      .filter(Boolean)
+                  )
+                }
+              />
+            </Field>
           </div>
 
           <div style={S.divider} />
 
-          <div style={{ fontWeight: 950, fontSize: 14 }}>Scaling (per division overrides)</div>
-          <div style={{ ...S.muted, marginTop: 4 }}>
-            Add overrides for divisions that need different description/standards/equipment/unit/cap.
+          <div style={{ fontWeight: 950 }}>Live window</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
+            <Field label="Opens">
+              <input
+                style={S.input}
+                type="datetime-local"
+                value={isoToLocalInput(draft.liveWindow?.openAt)}
+                onChange={(e) => setField("liveWindow", { ...(draft.liveWindow || {}), openAt: localInputToIso(e.target.value) })}
+              />
+            </Field>
+            <Field label="Closes">
+              <input
+                style={S.input}
+                type="datetime-local"
+                value={isoToLocalInput(draft.liveWindow?.closeAt)}
+                onChange={(e) => setField("liveWindow", { ...(draft.liveWindow || {}), closeAt: localInputToIso(e.target.value) })}
+              />
+            </Field>
           </div>
 
-          <div style={{ height: 10 }} />
+          <div style={S.divider} />
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 12 }}>
-            {divisions.map((div) => {
-              const s = draft.scalingByDivision?.[div] || null;
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 950 }}>Division scaling overrides</div>
+              <div style={{ ...S.muted, marginTop: 4 }}>
+                Add overrides per division (optional). Any field left blank falls back to base workout.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
+            {(divisions || []).map((div) => {
+              const has = !!draft.scalingByDivision?.[div];
+              const s = draft.scalingByDivision?.[div] || {};
               return (
                 <div key={div} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                    <div style={{ fontWeight: 950 }}>{div}</div>
-                    <span style={S.tag}>{s ? "override" : "base"}</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <div style={{ fontWeight: 900 }}>
+                      {div} {has ? <span style={{ ...S.tag, marginLeft: 8 }}>OVERRIDES ON</span> : <span style={{ ...S.tag, marginLeft: 8 }}>OFF</span>}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {has ? (
+                        <Button variant="danger" onClick={() => removeScale(div)} type="button">
+                          Remove overrides
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="primary"
+                          onClick={() =>
+                            setDraft((d) => ({ ...d, scalingByDivision: { ...(d.scalingByDivision || {}), [div]: {} } }))
+                          }
+                          type="button"
+                        >
+                          Add overrides
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
-                  <div style={{ height: 10 }} />
+                  {has ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+                      <Field label="Description override" style={{ gridColumn: "1 / -1" }}>
+                        <textarea
+                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                          value={s.description || ""}
+                          onChange={(e) => setScale(div, "description", e.target.value)}
+                          placeholder="Leave blank to use base description"
+                        />
+                      </Field>
 
-                  <Field label="Description override (optional)">
-                    <textarea
-                      style={{ ...S.input, minHeight: 70, resize: "vertical" }}
-                      value={s?.description || ""}
-                      onChange={(e) => setScale(div, { description: e.target.value })}
-                      placeholder="If blank, base description is used."
-                    />
-                  </Field>
+                      <Field label="Unit override">
+                        <input style={S.input} value={s.unit || ""} onChange={(e) => setScale(div, "unit", e.target.value)} />
+                      </Field>
 
-                  <div style={{ height: 10 }} />
+                      <Field label="Cap override">
+                        <input style={S.input} value={s.cap || ""} onChange={(e) => setScale(div, "cap", e.target.value)} />
+                      </Field>
 
-                  <Field label="Standards override (comma separated, optional)">
-                    <input
-                      style={S.input}
-                      value={Array.isArray(s?.standards) ? s.standards.join(", ") : ""}
-                      onChange={(e) => setScale(div, { standards: csvToArr(e.target.value) })}
-                      placeholder="If blank, base standards are used."
-                    />
-                  </Field>
+                      <Field label="Sort override">
+                        <Select
+                          value={s.sort || ""}
+                          onChange={(v) => setScale(div, "sort", v)}
+                          options={[
+                            { value: "", label: "(use base)" },
+                            { value: "asc", label: "asc" },
+                            { value: "desc", label: "desc" },
+                          ]}
+                        />
+                      </Field>
 
-                  <div style={{ height: 10 }} />
+                      <Field label="Score type override">
+                        <Select
+                          value={s.scoreType || ""}
+                          onChange={(v) => setScale(div, "scoreType", v)}
+                          options={[
+                            { value: "", label: "(use base)" },
+                            { value: "time", label: "time" },
+                            { value: "reps", label: "reps" },
+                            { value: "load", label: "load" },
+                            { value: "distance", label: "distance" },
+                            { value: "calories", label: "calories" },
+                          ]}
+                        />
+                      </Field>
 
-                  <Field label="Equipment override (comma separated, optional)">
-                    <input
-                      style={S.input}
-                      value={Array.isArray(s?.equipment) ? s.equipment.join(", ") : ""}
-                      onChange={(e) => setScale(div, { equipment: csvToArr(e.target.value) })}
-                      placeholder="If blank, base equipment is used."
-                    />
-                  </Field>
+                      <Field label="Equipment override (one per line)" style={{ gridColumn: "1 / -1" }}>
+                        <textarea
+                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                          value={Array.isArray(s.equipment) ? s.equipment.join("\n") : ""}
+                          onChange={(e) => setScaleList(div, "equipment", e.target.value)}
+                        />
+                      </Field>
 
-                  <div style={{ height: 10 }} />
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Field label="Unit override (optional)">
-                      <input
-                        style={S.input}
-                        value={s?.unit || ""}
-                        onChange={(e) => setScale(div, { unit: e.target.value })}
-                        placeholder="e.g. sec"
-                      />
-                    </Field>
-                    <Field label="Cap override (optional)">
-                      <input
-                        style={S.input}
-                        value={s?.cap || ""}
-                        onChange={(e) => setScale(div, { cap: e.target.value })}
-                        placeholder="e.g. 12:00"
-                      />
-                    </Field>
-                  </div>
-
-                  <div style={{ height: 10 }} />
-
-                  {s ? (
-                    <Button variant="danger" onClick={() => removeScale(div)}>
-                      Remove override
-                    </Button>
+                      <Field label="Standards override (one per line)" style={{ gridColumn: "1 / -1" }}>
+                        <textarea
+                          style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                          value={Array.isArray(s.standards) ? s.standards.join("\n") : ""}
+                          onChange={(e) => setScaleList(div, "standards", e.target.value)}
+                        />
+                      </Field>
+                    </div>
                   ) : (
-                    <div style={S.muted}>No override set (uses base workout).</div>
+                    <div style={{ ...S.muted, marginTop: 10 }}>No overrides for this division.</div>
                   )}
                 </div>
               );
             })}
-          </div>
-
-          <div style={S.divider} />
-
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-            <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" onClick={() => onSave(draft)}>
-              Save workout
-            </Button>
           </div>
         </div>
       </div>
@@ -2431,35 +2593,71 @@ export default function App() {
 
   /* ================================
      SETTINGS / ADMIN
-================================ */
+  ================================ */
   const AdminPanel = () => (
-    <div style={{ ...S.row, marginTop: 14 }}>
+    <div style={{ ...S.row, marginTop: 14, alignItems: "stretch" }}>
       <div style={{ flex: "1 1 760px", ...S.card }}>
         <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin</div>
-        <div style={S.muted}>Global demo toggles.</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Global demo toggles + import/export. Stored in localStorage.</div>
 
         <div style={S.divider} />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>Global controls</div>
-            <div style={{ height: 10 }} />
-            <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
-            <div style={{ height: 10 }} />
-            <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
-            <div style={{ height: 10 }} />
-            <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only leaderboard (non-staff)" />
-            <div style={{ height: 10 }} />
-            <Toggle checked={data.settings.allowProvisionalForStaff} onChange={() => toggleSetting("allowProvisionalForStaff")} label="Allow provisional for staff" />
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
+          <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
+          <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only visibility" />
+          <Toggle
+            checked={data.settings.allowProvisionalForStaff}
+            onChange={() => toggleSetting("allowProvisionalForStaff")}
+            label="Staff can view provisional"
+          />
+        </div>
 
-          <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>Points system</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>
-              For each workout: rank by direction → points = <strong>N - rank + 1</strong>. Missing score = <strong>0 points</strong>.
-              Totals aggregate across workouts for overall ranking.
-            </div>
-          </div>
+        <div style={S.divider} />
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Button variant="default" onClick={exportAll} type="button">
+            Export JSON
+          </Button>
+          <Button variant="default" onClick={() => fileInputRef.current?.click()} type="button">
+            Import JSON
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const res = await importJson(f);
+              if (!res.ok) showToast("warn", res.error);
+              else showToast("ok", "Imported.");
+              e.target.value = "";
+            }}
+          />
+          <Button variant="danger" onClick={resetDemo} type="button">
+            Reset demo
+          </Button>
+        </div>
+
+        <div style={{ ...S.muted, marginTop: 10 }}>
+          Tip: to “go production”, you’ll remove DEFAULT_DATA and replace updateComp() calls with API calls (and hydrate state from backend).
+        </div>
+      </div>
+
+      <div style={{ flex: "0 0 360px", ...S.card }}>
+        <div style={{ fontWeight: 900 }}>Demo workflow script</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>
+          1) Set role to Athlete, submit a score.
+          <br />
+          2) Set role to Judge, propose adjustment.
+          <br />
+          3) Set role to Head Judge, approve FINAL.
+          <br />
+          4) Set role to Spectator to see leaderboard changes.
+          <br />
+          5) Set role to Organiser to hide leaderboard / close submissions.
         </div>
       </div>
     </div>
@@ -2467,7 +2665,7 @@ export default function App() {
 
   /* ================================
      APP ROOT
-================================ */
+  ================================ */
   return (
     <div style={S.page}>
       <div style={S.container}>
@@ -2478,8 +2676,17 @@ export default function App() {
         {tab === "directory" ? <DirectoryPanel /> : null}
         {tab === "admin" ? <AdminPanel /> : null}
       </div>
+
+      {workoutEditor ? (
+        <WorkoutEditorModal
+          editor={workoutEditor}
+          onClose={() => setWorkoutEditor(null)}
+          onSave={saveWorkout}
+          divisions={compDivisions}
+        />
+      ) : null}
+
       <Toast />
     </div>
   );
 }
-
