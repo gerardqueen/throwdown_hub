@@ -1,21 +1,21 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";import React, { useEffect, useMemo, use — Single-file Demo App.jsx (Role-specific UX)
- * Improvements:
- * - Division leaderboards (Overall + per division tabs)
- * - Workout scaling per division (description/standards/equipment/unit/cap overrides)
- * - Missing workout scores show as 0 (instead of blank) in leaderboards ("0s")
- * - Fixes prior build issues (missing bracket + broken anchors)
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";import React, { use**
+ * Throwdown Hub — Single-file Demo App.jsx (Role-based UX + Points Leaderboard)
  *
- * Workflow:
- * - Athlete/Team Manager submits online score (per workout, per division rules)
- * - Judge reviews submissions and creates adjustments
- * - Head Judge confirms adjustments -> FINAL scores
- * - Organiser can set workouts, scaling, and live windows, and hide leaderboard / close submissions
+ * Key features:
+ * - Workout scaling per division (overrides for description/standards/equipment/unit/cap)
+ * - Athletes/Teams submit online scores (raw values)
+ * - Judges review submissions and propose adjusted values
+ * - Head Judge confirms adjustments into FINAL scores
+ * - Organiser controls: workouts, scaling, live windows, leaderboard visibility, submissions
+ * - Leaderboards are points-based (per workout ranking -> points) to aggregate mixed score types
+ *
+ * Build-safe: no external UI libs, no alias imports, clean first line (no BOM), no broken JSX.
  */
 
 /* ================================
    LOCAL STORAGE
 ================================ */
-const LS_KEY = "tdh_single_file_demo_v4";
+const LS_KEY = "tdh_single_file_demo_v5_points";
 
 function safeParse(json, fallback) {
   try {
@@ -114,12 +114,8 @@ function defaultWindow(hoursFromNowOpen, hoursDuration) {
   return { openAt: open.toISOString(), closeAt: close.toISOString() };
 }
 
-/**
- * scalingByDivision: per-division overrides for the workout.
- * If a division is missing, the base workout fields apply.
- */
 const DEFAULT_DATA = {
-  meta: { version: 4, createdAt: new Date().toISOString() },
+  meta: { version: 5, createdAt: new Date().toISOString() },
 
   role: "spectator",
   mode: "athlete", // athlete | team
@@ -163,7 +159,7 @@ const DEFAULT_DATA = {
       date: "2026-06-20",
       location: "London",
       description:
-        "Role-based demo: athletes submit online scores, judges adjust, head judge confirms. Organiser controls workouts + scaling + live windows.",
+        "Role demo: athletes submit online scores, judges adjust, head judge confirms. Points leaderboard aggregates across workouts.",
       divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
 
       athletes: [
@@ -182,15 +178,15 @@ const DEFAULT_DATA = {
           id: "w1",
           name: "Qualifier 1 — Engine",
           divisionNotes: "All divisions (scaled options below)",
-          scoreType: "time",
-          sort: "asc",
+          scoreType: "time", // time | reps | load | points
+          sort: "asc", // asc for time, desc otherwise
           unit: "sec",
           cap: "12:00",
           tiebreak: "Split time at round 6",
           equipment: ["Row erg", "Pull-up bar", "Kettlebell"],
           standards: [
             "Row for calories shown on monitor",
-            "Pulling standard: chin over bar or chest-to-bar per division",
+            "Pulling standard varies by division",
             "KB swings overhead (American) – arms locked out",
           ],
           description:
@@ -455,7 +451,7 @@ function Toggle({ checked, onChange, label, hint }) {
 ================================ */
 export default function App() {
   const [data, setData] = useState(() => loadData() || DEFAULT_DATA);
-  const [toast, setToast] = useState(null); // { type, msg }
+  const [toast, setToast] = useState(null);
 
   useEffect(() => saveData(data), [data]);
 
@@ -503,7 +499,7 @@ export default function App() {
   }
 
   function toggleSetting(key) {
-    setData((d) => ({ ...d, settings: { ...d.settings, [key]: !d.settings[key] } }));
+    setData((d) => ({ ...d, settings: { ...d.settings, !d.settings[key] } }));
   }
 
   function updateComp(compId, updater) {
@@ -531,7 +527,9 @@ export default function App() {
     });
   }
 
-  // Export/import
+  /* ----------------
+     Import / Export
+  ---------------- */
   const fileInputRef = useRef(null);
 
   function exportAll() {
@@ -547,7 +545,9 @@ export default function App() {
     return { ok: true };
   }
 
-  // Participants
+  /* ----------------
+     Participants
+  ---------------- */
   const participantList = useMemo(() => {
     if (!currentComp) return [];
     if (mode === "athlete") return (currentComp.athletes || []).map((a) => a.name);
@@ -567,42 +567,40 @@ export default function App() {
     if (!c) return [];
     const set = new Set();
     (c.divisions || []).forEach((d) => set.add(d));
-    // also include any division found on participants
     for (const [, meta] of participantMeta.entries()) {
       if (meta.division) set.add(meta.division);
     }
     return Array.from(set);
   }, [currentComp, participantMeta]);
 
-  // Workout scaling merge
   function workoutForDivision(workout, division) {
     const scaled = workout?.scalingByDivision?.[division];
     if (!scaled) return workout;
     return {
       ...workout,
       ...scaled,
-      // If scaled overrides equipment/standards, ensure arrays
       equipment: Array.isArray(scaled.equipment) ? scaled.equipment : workout.equipment,
       standards: Array.isArray(scaled.standards) ? scaled.standards : workout.standards,
-      // allow unit/cap overrides if present
       unit: scaled.unit || workout.unit,
       cap: scaled.cap || workout.cap,
     };
   }
 
-  // Workout live logic
-  function workoutIsLive(w) {
-    const open = w.liveWindow?.openAt ? new Date(w.liveWindow.openAt).getTime() : null;
-    const close = w.liveWindow?.closeAt ? new Date(w.liveWindow.closeAt).getTime() : null;
+  /* ----------------
+     Live windows
+  ---------------- */
+  function workoutIsLive(wBase) {
+    const open = wBase.liveWindow?.openAt ? new Date(wBase.liveWindow.openAt).getTime() : null;
+    const close = wBase.liveWindow?.closeAt ? new Date(wBase.liveWindow.closeAt).getTime() : null;
     if (open && now < open) return false;
     if (close && now > close) return false;
     return true;
   }
 
-  function workoutLiveLabel(w) {
-    const live = workoutIsLive(w);
-    const openAt = w.liveWindow?.openAt;
-    const closeAt = w.liveWindow?.closeAt;
+  function workoutLiveLabel(wBase) {
+    const live = workoutIsLive(wBase);
+    const openAt = wBase.liveWindow?.openAt;
+    const closeAt = wBase.liveWindow?.closeAt;
     if (live) return `LIVE (closes ${prettyDateTime(closeAt)})`;
     if (openAt && now < new Date(openAt).getTime()) return `Opens ${prettyDateTime(openAt)}`;
     if (closeAt && now > new Date(closeAt).getTime()) return `Closed ${prettyDateTime(closeAt)}`;
@@ -611,36 +609,162 @@ export default function App() {
 
   const submissionsClosed = data.settings.submissionsClosed;
   const leaderboardHidden = data.settings.hideLeaderboard;
-
   const finalOnly = data.settings.finalOnlyLeaderboard;
   const staffCanSeeProvisional = data.settings.allowProvisionalForStaff;
 
   /* ================================
-     Athlete submissions
-  ================================ */
+     EFFECTIVE SCORE RESOLUTION
+     (Final > awaiting adjustment > submission)
+================================ */
+  function getEffectiveScore(workoutId, participant) {
+    const c = currentComp;
+    if (!c) return { value: null, status: "none" };
+
+    const w = (c.workouts || []).find((x) => x.id === workoutId);
+    if (!w) return { value: null, status: "none" };
+
+    const privileged = isStaff && staffCanSeeProvisional;
+    const showProvisional = !finalOnly || privileged;
+
+    // Final
+    const f = c.finalScores?.[workoutId]?.[participant];
+    if (f && f.value !== undefined && f.value !== null) {
+      return { value: Number(f.value) || 0, status: "FINAL" };
+    }
+
+    if (showProvisional) {
+      // Latest awaiting adjustment
+      const awaiting = (c.adjustments || [])
+        .filter((a) => a.workoutId === workoutId && a.participant === participant && a.status === "awaiting_head_judge")
+        .sort((a, b) => String(b.adjustedAt || "").localeCompare(String(a.adjustedAt || "")))[0];
+
+      if (awaiting) return { value: Number(awaiting.adjustedValue) || 0, status: "ADJUSTED" };
+
+      // Submission
+      const s = c.submissions?.[workoutId]?.[participant];
+      if (s && s.status !== "withdrawn") return { value: Number(s.value) || 0, status: s.status || "submitted" };
+    }
+
+    return { value: null, status: "none" };
+  }
+
+  /* ================================
+     POINTS-BASED LEADERBOARD
+     - ranks per workout
+     - points = N - rank + 1
+     - missing score => 0 points
+     - supports Overall + per division
+================================ */
+  function isAscForWorkout(w) {
+    // explicit sort takes precedence; else time defaults asc, others desc
+    if (w.sort === "asc") return true;
+    if (w.sort === "desc") return false;
+    return w.scoreType === "time";
+  }
+
+  function computePointsLeaderboard(scopeParticipants) {
+    const c = currentComp;
+    if (!c) return [];
+
+    // init rows
+    const rows = new Map();
+    scopeParticipants.forEach((p) => {
+      rows.set(p.name, { name: p.name, division: p.division || "", totalPoints: 0, per: {} });
+    });
+
+    for (const w of c.workouts || []) {
+      const asc = isAscForWorkout(w);
+
+      // collect scores
+      const scored = [];
+      const missing = [];
+
+      for (const p of scopeParticipants) {
+        const eff = getEffectiveScore(w.id, p.name);
+        if (eff.value === null) {
+          missing.push({ name: p.name, value: null, status: "0" });
+        } else {
+          scored.push({ name: p.name, value: eff.value, status: eff.status });
+        }
+      }
+
+      // sort scored by direction (best first)
+      scored.sort((a, b) => {
+        if (a.value === b.value) return a.name.localeCompare(b.name);
+        return asc ? a.value - b.value : b.value - a.value;
+      });
+
+      // assign competition ranks (1,1,3)
+      const ranks = new Map();
+      let rank = 0;
+      let seen = 0;
+      let prev = null;
+
+      for (const item of scored) {
+        seen += 1;
+        if (prev === null || item.value !== prev) {
+          rank = seen;
+          prev = item.value;
+        }
+        ranks.set(item.name, rank);
+      }
+
+      const N = scopeParticipants.length;
+
+      for (const p of scopeParticipants) {
+        const r = rows.get(p.name);
+        if (!r) continue;
+
+        const eff = getEffectiveScore(w.id, p.name);
+
+        let points = 0;
+        let raw = 0;
+        let status = "0";
+        let workoutRank = null;
+
+        if (eff.value !== null) {
+          raw = eff.value;
+          status = eff.status;
+          workoutRank = ranks.get(p.name) ?? null;
+          points = workoutRank ? Math.max(0, N - workoutRank + 1) : 0;
+        } else {
+          raw = 0; // "0s" for missing
+          status = "0";
+          workoutRank = null;
+          points = 0;
+        }
+
+        r.per[w.id] = { raw, unit: w.unit, status, points, rank: workoutRank };
+        r.totalPoints += points;
+      }
+    }
+
+    const arr = Array.from(rows.values());
+    arr.sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
+    return arr;
+  }
+
+  /* ================================
+     Athlete-side selections
+================================ */
   const [athleteView, setAthleteView] = useState("workouts"); // workouts | submit | leaderboard | my_submissions
   const [mySelection, setMySelection] = useState(() => participantList[0] || "");
-  const [lbDivision, setLbDivision] = useState("Overall"); // Overall or division
+  const [lbDivision, setLbDivision] = useState("Overall"); // Overall or division name
 
   useEffect(() => {
-    if (!participantList.includes(mySelection)) {
-      setMySelection(participantList[0] || "");
-    }
+    if (!participantList.includes(mySelection)) setMySelection(participantList[0] || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, data.ui.compId, participantList.join("|")]);
 
-  // Keep lbDivision valid
   useEffect(() => {
     const opts = ["Overall", ...compDivisions];
     if (!opts.includes(lbDivision)) setLbDivision("Overall");
   }, [compDivisions, lbDivision]);
 
-  const [submitDraft, setSubmitDraft] = useState({
-    workoutId: "",
-    value: "",
-    videoUrl: "",
-    notes: "",
-  });
+  /* ================================
+     SUBMIT DRAFT
+================================ */
+  const [submitDraft, setSubmitDraft] = useState({ workoutId: "", value: "", videoUrl: "", notes: "" });
 
   useEffect(() => {
     const firstWorkout = currentComp?.workouts?.[0]?.id || "";
@@ -656,8 +780,13 @@ export default function App() {
       return;
     }
 
-    const wBase = comp.workouts.find((x) => x.id === submitDraft.workoutId);
+    const wBase = (comp.workouts || []).find((x) => x.id === submitDraft.workoutId);
     if (!wBase) return;
+
+    if (!workoutIsLive(wBase)) {
+      showToast("warn", "This workout is not live right now.");
+      return;
+    }
 
     const participant = mySelection;
     if (!participant) {
@@ -666,13 +795,6 @@ export default function App() {
     }
 
     const division = participantMeta.get(participant)?.division || "";
-    const w = workoutForDivision(wBase, division);
-
-    if (!workoutIsLive(wBase)) {
-      showToast("warn", "This workout is not live right now.");
-      return;
-    }
-
     const n = toNumberOrNull(submitDraft.value);
     if (n === null) {
       showToast("warn", "Score must be a number.");
@@ -694,13 +816,13 @@ export default function App() {
       return c;
     });
 
-    addAudit(`Online submission: ${participant} (${division}) submitted ${n} for ${w.name}`);
+    addAudit(`Online submission: ${participant} (${division}) submitted ${n} for ${wBase.name}`);
     showToast("ok", "Submitted! Judge will review.");
   }
 
   /* ================================
-     Judge review & adjust
-  ================================ */
+     JUDGE VIEW
+================================ */
   const [judgeView, setJudgeView] = useState("review"); // review | adjusted_queue | leaderboard
   const [judgeName, setJudgeName] = useState(() => currentComp?.judgePool?.[0] || "Judge");
 
@@ -771,7 +893,7 @@ export default function App() {
       return;
     }
 
-    const w = c.workouts.find((x) => x.id === adjustDraft.workoutId);
+    const w = (c.workouts || []).find((x) => x.id === adjustDraft.workoutId);
     if (!w) return;
 
     const original = c.submissions?.[w.id]?.[adjustDraft.participant];
@@ -807,16 +929,14 @@ export default function App() {
       return draft;
     });
 
-    addAudit(
-      `Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`
-    );
+    addAudit(`Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`);
     showToast("ok", "Adjustment sent to Head Judge.");
     setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
   }
 
   /* ================================
-     Head Judge confirm adjustments
-  ================================ */
+     HEAD JUDGE VIEW
+================================ */
   const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | leaderboard | audit
   const [headJudgeName, setHeadJudgeName] = useState(() => currentComp?.headJudgePool?.[0] || "Head Judge");
 
@@ -833,7 +953,6 @@ export default function App() {
   function confirmAdjustment(adjId) {
     const c = currentComp;
     if (!c) return;
-
     const adj = (c.adjustments || []).find((x) => x.id === adjId);
     if (!adj) return;
 
@@ -850,20 +969,16 @@ export default function App() {
 
       const item = (draft.adjustments || []).find((x) => x.id === adjId);
       if (item) item.status = "confirmed";
-
       return draft;
     });
 
-    addAudit(
-      `Head Judge confirmed adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: final=${adj.adjustedValue}`
-    );
+    addAudit(`Head Judge confirmed adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: final=${adj.adjustedValue}`);
     showToast("ok", "Confirmed -> Final score updated.");
   }
 
   function rejectAdjustment(adjId, reason) {
     const c = currentComp;
     if (!c) return;
-
     const adj = (c.adjustments || []).find((x) => x.id === adjId);
     if (!adj) return;
 
@@ -881,93 +996,35 @@ export default function App() {
         sub.status = "needs_change";
         sub.judgeNote = reason || "Please resubmit / clarify score evidence.";
       }
-
       return draft;
     });
 
-    addAudit(
-      `Head Judge rejected adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: ${reason || "no note"}`
-    );
+    addAudit(`Head Judge rejected adjustment for ${adj.participant} (${adj.division}) on ${adj.workoutName}: ${reason || "no note"}`);
     showToast("ok", "Rejected (athlete marked needs change).");
   }
 
   /* ================================
-     Leaderboard (division tabs + 0s)
+     POINTS LEADERBOARD (memo)
 ================================ */
-  const leaderboard = useMemo(() => {
+  const scopeParticipants = useMemo(() => {
     const c = currentComp;
     if (!c) return [];
-
-    const privileged = isStaff && staffCanSeeProvisional;
-    const showProvisional = !finalOnly || privileged;
-
-    // Base participants list (so everyone appears with 0s)
-    const participants =
+    const all =
       mode === "athlete"
-        ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division }))
-        : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
+        ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division || "" }))
+        : (c.teams || []).map((t) => ({ name: t.name, division: t.division || "" }));
 
-    const rows = new Map();
-    participants.forEach((p) => {
-      rows.set(p.name, { name: p.name, division: p.division || "", total: 0, per: {} });
-    });
+    if (lbDivision === "Overall") return all;
+    return all.filter((p) => p.division === lbDivision);
+  }, [currentComp, mode, lbDivision]);
 
-    // For each workout, choose effective score per participant:
-    // - finalScores (best)
-    // - else (if showProvisional) awaiting adjustment (adjustedValue)
-    // - else (if showProvisional) submission value
-    // - else missing => 0
-    for (const w of c.workouts || []) {
-      const finals = c.finalScores?.[w.id] || {};
-
-      const awaiting = (c.adjustments || [])
-        .filter((a) => a.workoutId === w.id && a.status === "awaiting_head_judge")
-        .sort((a, b) => String(b.adjustedAt || "").localeCompare(String(a.adjustedAt || "")));
-      const awaitingBy = new Map();
-      awaiting.forEach((a) => {
-        if (!awaitingBy.has(a.participant)) awaitingBy.set(a.participant, a);
-      });
-
-      const subs = c.submissions?.[w.id] || {};
-
-      for (const p of participants) {
-        const r = rows.get(p.name);
-        if (!r) continue;
-
-        let value = 0;
-        let status = "0";
-        if (finals[p.name]) {
-          value = Number(finals[p.name].value || 0);
-          status = "FINAL";
-        } else if (showProvisional && awaitingBy.get(p.name)) {
-          const a = awaitingBy.get(p.name);
-          value = Number(a.adjustedValue || 0);
-          status = "ADJUSTED";
-        } else if (showProvisional && subs[p.name] && subs[p.name].status !== "withdrawn") {
-          value = Number(subs[p.name].value || 0);
-          status = subs[p.name].status || "submitted";
-        } else {
-          value = 0;
-          status = "0";
-        }
-
-        r.per[w.id] = { value, unit: w.unit, status };
-        r.total += value;
-      }
-    }
-
-    const arr = Array.from(rows.values());
-    arr.sort((a, b) => b.total - a.total);
-    return arr;
-  }, [currentComp, mode, isStaff, staffCanSeeProvisional, finalOnly]);
-
-  const leaderboardFiltered = useMemo(() => {
-    if (lbDivision === "Overall") return leaderboard;
-    return leaderboard.filter((r) => r.division === lbDivision);
-  }, [leaderboard, lbDivision]);
+  const pointsLeaderboard = useMemo(() => {
+    return computePointsLeaderboard(scopeParticipants);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentComp, mode, lbDivision, isStaff, staffCanSeeProvisional, finalOnly]);
 
   /* ================================
-     Organiser: workouts + scaling editor + scheduling
+     ORGANISER: workout editor + schedule + controls
 ================================ */
   const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | controls | audit
   const [workoutEditor, setWorkoutEditor] = useState(null); // {mode, draft}
@@ -1011,7 +1068,6 @@ export default function App() {
       c.submissions[draftWorkout.id] = c.submissions[draftWorkout.id] || {};
       c.finalScores = c.finalScores || {};
       c.finalScores[draftWorkout.id] = c.finalScores[draftWorkout.id] || {};
-
       return c;
     });
 
@@ -1033,16 +1089,16 @@ export default function App() {
   }
 
   /* ================================
-     UI: header & tabs
+     HEADER / TABS
 ================================ */
   const tab = data.ui.tab;
 
   const Header = () => (
     <div style={S.headerRow}>
       <div>
-        <div style={S.title}>Throwdown Hub — Role‑based Demo (Divisions + Scaling)</div>
+        <div style={S.title}>Throwdown Hub — Demo (Points Leaderboard)</div>
         <div style={S.subTitle}>
-          Athletes submit → Judges adjust → Head Judge confirms → Organiser controls workouts + scaling + live windows
+          Points per workout (rank-based) → aggregate total points, with division scaling + role workflows
         </div>
       </div>
 
@@ -1115,7 +1171,7 @@ export default function App() {
           background: toast.type === "ok" ? "rgba(70,170,255,0.25)" : "rgba(255,160,70,0.22)",
           border: "1px solid rgba(255,255,255,0.14)",
           boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-          maxWidth: 360,
+          maxWidth: 380,
           zIndex: 1000,
         }}
       >
@@ -1147,11 +1203,6 @@ export default function App() {
                     {d}
                   </span>
                 ))}
-                {(evt.tags || []).map((t) => (
-                  <span key={t} style={{ ...S.tag, opacity: 0.85 }}>
-                    #{t}
-                  </span>
-                ))}
               </div>
               {evt.instagram ? (
                 <div style={{ marginTop: 8, ...S.muted }}>
@@ -1168,7 +1219,7 @@ export default function App() {
   };
 
   /* ================================
-     COMPETITION: role-specific shells
+     COMPETITION PANEL (role-specific)
 ================================ */
   const CompetitionPanel = () => {
     if (!currentComp) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
@@ -1184,7 +1235,7 @@ export default function App() {
               </div>
             </div>
             <div style={S.pill}>
-              <strong>Role view:</strong> {role}
+              <strong>Role:</strong> {role}
             </div>
           </div>
 
@@ -1205,7 +1256,7 @@ export default function App() {
               <strong>Submissions</strong> {submissionsClosed ? "Closed" : "Open"}
             </div>
             <div style={S.pill}>
-              <strong>Leaderboard</strong> {leaderboardHidden ? "Hidden" : finalOnly ? "Final-only" : "Provisional"}
+              <strong>Leaderboard</strong> {leaderboardHidden ? "Hidden" : finalOnly ? "Final-only (non-staff)" : "Provisional"}
             </div>
             <div style={S.pill}>
               <strong>Now</strong> {prettyDateTime(new Date().toISOString())}
@@ -1240,7 +1291,7 @@ export default function App() {
       <div>
         <div style={{ fontSize: 15, fontWeight: 900 }}>Spectator</div>
         <div style={{ ...S.muted, marginTop: 6 }}>
-          You can view workouts and the leaderboard (if enabled). Switch role to Athlete/Team Manager to submit.
+          View workouts + leaderboard. Switch to Athlete/Team Manager to submit.
         </div>
 
         <div style={S.divider} />
@@ -1300,7 +1351,7 @@ export default function App() {
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Submit an online score</div>
             <div style={{ ...S.muted, marginTop: 6 }}>
-              You can only submit while the workout is LIVE and submissions are open. Your division: <strong>{myDivision || "—"}</strong>
+              Only submit while workout is LIVE and submissions are open. Division: <strong>{myDivision || "—"}</strong>
             </div>
 
             <div style={S.divider} />
@@ -1394,7 +1445,7 @@ export default function App() {
                   {s.videoUrl ? (
                     <div style={{ ...S.muted, marginTop: 6 }}>
                       Video:{" "}
-                      <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#a7d7ff" }}>
+                      <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#bfe7ff" }}>
                         Open
                       </a>
                     </div>
@@ -1448,9 +1499,7 @@ export default function App() {
         {judgeView === "review" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Submission review</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>
-              Select a submission → adjust score → it goes to Head Judge to confirm.
-            </div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Select a submission → adjust score → send to Head Judge to confirm.</div>
 
             <div style={S.divider} />
 
@@ -1465,7 +1514,6 @@ export default function App() {
               </Field>
 
               <Field label="Workout">
-                {/* FIXED: closes the array properly */}
                 <Select
                   value={judgeFilter.workoutId}
                   onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
@@ -1518,14 +1566,13 @@ export default function App() {
                   {r.videoUrl ? (
                     <div style={{ ...S.muted, marginTop: 6 }}>
                       Video:{" "}
-                      <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#a7d7ff" }}>
+                      <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#bfe7ff" }}>
                         Open
                       </a>
                     </div>
                   ) : null}
 
                   {r.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Athlete note: “{r.notes}”</div> : null}
-                  {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Previous judge note: “{r.judgeNote}”</div> : null}
 
                   <div style={S.divider} />
 
@@ -1538,7 +1585,7 @@ export default function App() {
               {judgeFiltered.length === 0 ? (
                 <div style={{ ...S.card, padding: 12 }}>
                   <div style={{ fontWeight: 900 }}>No submissions match your filters.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Athlete role and submit some demo scores to populate this list.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Athlete and submit some demo scores to populate this list.</div>
                 </div>
               ) : null}
             </div>
@@ -1597,7 +1644,9 @@ export default function App() {
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                     <div>
                       <div style={{ fontWeight: 900 }}>{a.participant}</div>
-                      <div style={S.muted}>{a.workoutName} • {a.division || "—"} • {prettyDateTime(a.adjustedAt)}</div>
+                      <div style={S.muted}>
+                        {a.workoutName} • {a.division || "—"} • {prettyDateTime(a.adjustedAt)}
+                      </div>
                     </div>
                     <span style={S.tag}>{a.status}</span>
                   </div>
@@ -1653,9 +1702,6 @@ export default function App() {
         {headJudgeView === "confirm" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Adjusted scores awaiting confirmation</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>
-              Confirmed adjustments become FINAL scores. Rejected ones mark the submission as “needs_change”.
-            </div>
 
             <div style={S.divider} />
 
@@ -1688,7 +1734,7 @@ export default function App() {
                   </div>
 
                   <div style={{ height: 10 }} />
-                  <Field label="Reject note (applies to Reject button)">
+                  <Field label="Reject note (applies to Reject)">
                     <input
                       style={S.input}
                       value={rejectNote}
@@ -1702,7 +1748,7 @@ export default function App() {
               {awaitingAdjustments.length === 0 ? (
                 <div style={{ ...S.card, padding: 12 }}>
                   <div style={{ fontWeight: 900 }}>No adjustments awaiting confirmation.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Judge role and adjust a submission to populate this list.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Judge and adjust a submission to populate this list.</div>
                 </div>
               ) : null}
             </div>
@@ -1758,7 +1804,9 @@ export default function App() {
           </Button>
 
           <div style={{ marginLeft: "auto" }}>
-            <Button variant="primary" onClick={openNewWorkout}>+ Add workout</Button>
+            <Button variant="primary" onClick={openNewWorkout}>
+              + Add workout
+            </Button>
           </div>
         </div>
 
@@ -1767,7 +1815,7 @@ export default function App() {
         {orgView === "workouts" ? (
           <div>
             <div style={{ fontSize: 15, fontWeight: 900 }}>Workout builder + scaling</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Edit base workout + per-division overrides (scaling).</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Edit base workout + per-division overrides.</div>
 
             <div style={S.divider} />
 
@@ -1777,7 +1825,9 @@ export default function App() {
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                     <div>
                       <div style={{ fontWeight: 900 }}>{w.name}</div>
-                      <div style={S.muted}>{w.scoreType} • cap {w.cap} • {workoutLiveLabel(w)}</div>
+                      <div style={S.muted}>
+                        {w.scoreType} • cap {w.cap} • {workoutLiveLabel(w)}
+                      </div>
                     </div>
                     <span style={S.tag}>{w.id}</span>
                   </div>
@@ -1808,192 +1858,200 @@ export default function App() {
             {workoutEditor ? (
               <WorkoutEditorModal
                 editor={workoutEditor}
+                divisions={compDivisions}
                 onClose={() => setWorkoutEditor(null)}
                 onSave={saveWorkout}
-                divisions={compDivisions}
               />
             ) : null}
           </div>
         ) : null}
 
         {orgView === "schedule" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time).</div>
-
-            <div style={S.divider} />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
-              {(currentComp.workouts || []).map((w) => (
-                <div key={w.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>{w.name}</div>
-                  <div style={S.muted}>{workoutLiveLabel(w)}</div>
-
-                  <div style={{ height: 10 }} />
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Field label="Open at">
-                      <input
-                        style={S.input}
-                        type="datetime-local"
-                        value={isoToLocalInput(w.liveWindow?.openAt)}
-                        onChange={(e) => {
-                          const openIso = localInputToIso(e.target.value);
-                          updateComp(currentComp.id, (c) => {
-                            const ww = c.workouts.find((x) => x.id === w.id);
-                            ww.liveWindow = ww.liveWindow || {};
-                            ww.liveWindow.openAt = openIso;
-                            return c;
-                          });
-                        }}
-                      />
-                    </Field>
-                    <Field label="Close at">
-                      <input
-                        style={S.input}
-                        type="datetime-local"
-                        value={isoToLocalInput(w.liveWindow?.closeAt)}
-                        onChange={(e) => {
-                          const closeIso = localInputToIso(e.target.value);
-                          updateComp(currentComp.id, (c) => {
-                            const ww = c.workouts.find((x) => x.id === w.id);
-                            ww.liveWindow = ww.liveWindow || {};
-                            ww.liveWindow.closeAt = closeIso;
-                            return c;
-                          });
-                        }}
-                      />
-                    </Field>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <SchedulePanel />
         ) : null}
 
         {orgView === "controls" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
-            <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, final-only visibility.</div>
-
-            <div style={S.divider} />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
-              <div style={{ ...S.card, padding: 12 }}>
-                <Toggle
-                  checked={data.settings.hideLeaderboard}
-                  onChange={() => toggleSetting("hideLeaderboard")}
-                  label="Hide leaderboard"
-                  hint="Athletes & spectators won’t see the leaderboard at all."
-                />
-                <div style={{ height: 10 }} />
-                <Toggle
-                  checked={data.settings.submissionsClosed}
-                  onChange={() => toggleSetting("submissionsClosed")}
-                  label="Close submissions"
-                  hint="Blocks athlete/team online score submissions."
-                />
-                <div style={{ height: 10 }} />
-                <Toggle
-                  checked={data.settings.finalOnlyLeaderboard}
-                  onChange={() => toggleSetting("finalOnlyLeaderboard")}
-                  label="Final-only leaderboard"
-                  hint="Non-staff see only FINAL confirmed scores."
-                />
-                <div style={{ height: 10 }} />
-                <Toggle
-                  checked={data.settings.allowProvisionalForStaff}
-                  onChange={() => toggleSetting("allowProvisionalForStaff")}
-                  label="Allow provisional for staff"
-                  hint="Staff can still see provisional when final-only is ON."
-                />
-              </div>
-
-              <div style={{ ...S.card, padding: 12 }}>
-                <div style={{ fontWeight: 900 }}>Quick demo actions</div>
-                <div style={{ ...S.muted, marginTop: 6 }}>Populate data fast for screenshots.</div>
-                <div style={{ height: 10 }} />
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    const w = currentComp.workouts?.[0];
-                    if (!w) return;
-                    updateComp(currentComp.id, (c) => {
-                      c.submissions = c.submissions || {};
-                      c.submissions[w.id] = c.submissions[w.id] || {};
-                      const participants =
-                        mode === "athlete" ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division })) : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
-                      participants.forEach((p) => {
-                        c.submissions[w.id][p.name] = {
-                          value: Math.floor(Math.random() * 300) + 1,
-                          videoUrl: "",
-                          notes: "Auto-generated demo submission",
-                          submittedAt: new Date().toISOString(),
-                          status: "submitted",
-                          judgeNote: "",
-                          division: p.division,
-                        };
-                      });
-                      return c;
-                    });
-                    addAudit(`Organiser generated random demo submissions for ${currentComp.workouts?.[0]?.name}`);
-                    showToast("ok", "Random submissions generated for workout 1.");
-                  }}
-                >
-                  Generate submissions (workout 1)
-                </Button>
-                <div style={{ height: 10 }} />
-                <Button
-                  onClick={() => {
-                    updateComp(currentComp.id, (c) => {
-                      c.submissions = {};
-                      c.adjustments = [];
-                      c.finalScores = {};
-                      return c;
-                    });
-                    addAudit("Organiser cleared all submissions/adjustments/final scores");
-                    showToast("ok", "Cleared all qualifier scoring data.");
-                  }}
-                >
-                  Clear qualifier data
-                </Button>
-              </div>
-            </div>
-
-            <div style={S.divider} />
-
-            <LeaderboardPanel />
-          </div>
+          <ControlsPanel />
         ) : null}
 
         {orgView === "audit" ? (
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
-            <div style={S.divider} />
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {(currentComp.audit || []).map((a) => (
-                <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>{a.message}</div>
-                    <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
-                  </div>
-                </div>
-              ))}
-              {(currentComp.audit || []).length === 0 ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>Create/edit workouts and process scores to generate audit.</div>
-                </div>
-              ) : null}
-            </div>
-          </div>
+          <AuditPanel />
         ) : null}
       </div>
     );
   }
 
+  function SchedulePanel() {
+    return (
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (browser local time).</div>
+
+        <div style={S.divider} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+          {(currentComp.workouts || []).map((w) => (
+            <div key={w.id} style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900 }}>{w.name}</div>
+              <div style={S.muted}>{workoutLiveLabel(w)}</div>
+
+              <div style={{ height: 10 }} />
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Open at">
+                  <input
+                    style={S.input}
+                    type="datetime-local"
+                    value={isoToLocalInput(w.liveWindow?.openAt)}
+                    onChange={(e) => {
+                      const openIso = localInputToIso(e.target.value);
+                      updateComp(currentComp.id, (c) => {
+                        const ww = c.workouts.find((x) => x.id === w.id);
+                        ww.liveWindow = ww.liveWindow || {};
+                        ww.liveWindow.openAt = openIso;
+                        return c;
+                      });
+                    }}
+                  />
+                </Field>
+                <Field label="Close at">
+                  <input
+                    style={S.input}
+                    type="datetime-local"
+                    value={isoToLocalInput(w.liveWindow?.closeAt)}
+                    onChange={(e) => {
+                      const closeIso = localInputToIso(e.target.value);
+                      updateComp(currentComp.id, (c) => {
+                        const ww = c.workouts.find((x) => x.id === w.id);
+                        ww.liveWindow = ww.liveWindow || {};
+                        ww.liveWindow.closeAt = closeIso;
+                        return c;
+                      });
+                    }}
+                  />
+                </Field>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function ControlsPanel() {
+    return (
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, final-only visibility.</div>
+
+        <div style={S.divider} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+          <div style={{ ...S.card, padding: 12 }}>
+            <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
+            <div style={{ height: 10 }} />
+            <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
+            <div style={{ height: 10 }} />
+            <Toggle
+              checked={data.settings.finalOnlyLeaderboard}
+              onChange={() => toggleSetting("finalOnlyLeaderboard")}
+              label="Final-only leaderboard (non-staff)"
+              hint="Staff can still see provisional if allowed."
+            />
+            <div style={{ height: 10 }} />
+            <Toggle
+              checked={data.settings.allowProvisionalForStaff}
+              onChange={() => toggleSetting("allowProvisionalForStaff")}
+              label="Allow provisional for staff"
+            />
+          </div>
+
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900 }}>Quick demo actions</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Populate data fast for screenshots.</div>
+            <div style={{ height: 10 }} />
+            <Button
+              variant="primary"
+              onClick={() => {
+                const w = currentComp.workouts?.[0];
+                if (!w) return;
+                updateComp(currentComp.id, (c) => {
+                  c.submissions = c.submissions || {};
+                  c.submissions[w.id] = c.submissions[w.id] || {};
+                  const participants =
+                    mode === "athlete"
+                      ? (c.athletes || []).map((a) => ({ name: a.name, division: a.division }))
+                      : (c.teams || []).map((t) => ({ name: t.name, division: t.division }));
+                  participants.forEach((p) => {
+                    c.submissions[w.id][p.name] = {
+                      value: Math.floor(Math.random() * 300) + 1,
+                      videoUrl: "",
+                      notes: "Auto-generated demo submission",
+                      submittedAt: new Date().toISOString(),
+                      status: "submitted",
+                      judgeNote: "",
+                      division: p.division,
+                    };
+                  });
+                  return c;
+                });
+                addAudit(`Organiser generated random demo submissions for ${currentComp.workouts?.[0]?.name}`);
+                showToast("ok", "Random submissions generated for workout 1.");
+              }}
+            >
+              Generate submissions (workout 1)
+            </Button>
+            <div style={{ height: 10 }} />
+            <Button
+              onClick={() => {
+                updateComp(currentComp.id, (c) => {
+                  c.submissions = {};
+                  c.adjustments = [];
+                  c.finalScores = {};
+                  return c;
+                });
+                addAudit("Organiser cleared all submissions/adjustments/final scores");
+                showToast("ok", "Cleared all qualifier scoring data.");
+              }}
+            >
+              Clear qualifier data
+            </Button>
+          </div>
+        </div>
+
+        <div style={S.divider} />
+        <LeaderboardPanel />
+      </div>
+    );
+  }
+
+  function AuditPanel() {
+    return (
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
+        <div style={S.divider} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {(currentComp.audit || []).map((a) => (
+            <div key={a.id} style={{ ...S.card, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 900 }}>{a.message}</div>
+                <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
+              </div>
+            </div>
+          ))}
+          {(currentComp.audit || []).length === 0 ? (
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
+              <div style={{ ...S.muted, marginTop: 6 }}>Create/edit workouts and process scores to generate audit.</div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   /* ================================
-     Common panels
+     COMMON: Workouts List
 ================================ */
   function WorkoutsList({ readOnly = false, division = "" }) {
     return (
@@ -2058,6 +2116,9 @@ export default function App() {
     );
   }
 
+  /* ================================
+     COMMON: Leaderboard Panel (Points)
+================================ */
   function LeaderboardPanel() {
     if (leaderboardHidden) {
       return (
@@ -2077,10 +2138,10 @@ export default function App() {
       <div>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <div style={{ fontSize: 15, fontWeight: 900 }}>
-            Leaderboard ({showProvisional ? "Provisional" : "Final-only"}) • Mode: {mode}
+            Leaderboard (Points) • {showProvisional ? "Provisional" : "Final-only (non-staff)"} • Mode: {mode}
           </div>
           <div style={S.muted}>
-            {finalOnly && !privileged ? "You are viewing FINAL confirmed scores only." : "Includes provisional where applicable."}
+            Points per workout: <strong>N - rank + 1</strong> • Missing scores = <strong>0</strong>
           </div>
         </div>
 
@@ -2090,7 +2151,7 @@ export default function App() {
             <Select value={lbDivision} onChange={setLbDivision} options={divisionOptions} style={{ padding: "6px 8px", borderRadius: 999 }} />
           </div>
           <div style={{ ...S.muted, marginLeft: "auto" }}>
-            Showing <strong>{leaderboardFiltered.length}</strong> entries • Missing scores display as <strong>0</strong>
+            Showing <strong>{pointsLeaderboard.length}</strong> entries
           </div>
         </div>
 
@@ -2103,35 +2164,39 @@ export default function App() {
                 <th style={S.th}>Rank</th>
                 <th style={S.th}>{mode === "athlete" ? "Athlete" : "Team"}</th>
                 <th style={S.th}>Division</th>
-                <th style={S.th}>Total</th>
+                <th style={S.th}>Total Points</th>
                 {(currentComp.workouts || []).map((w) => (
                   <th key={w.id} style={S.th}>{w.name}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {leaderboardFiltered.map((r, idx) => (
+              {pointsLeaderboard.map((r, idx) => (
                 <tr key={r.name}>
                   <td style={S.td}><div style={{ fontWeight: 900 }}>{idx + 1}</div></td>
                   <td style={S.td}><div style={{ fontWeight: 900 }}>{r.name}</div></td>
                   <td style={S.td}>{r.division || "—"}</td>
-                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.total}</div></td>
+                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.totalPoints}</div></td>
+
                   {(currentComp.workouts || []).map((w) => {
-                    const s = r.per[w.id];
+                    const cell = r.per[w.id] || { raw: 0, unit: w.unit, status: "0", points: 0, rank: null };
                     return (
                       <td key={w.id} style={S.td}>
-                        <div style={{ fontWeight: 900 }}>{s ? s.value : 0} {w.unit}</div>
-                        <div style={S.muted}>{s ? s.status : "0"}</div>
+                        <div style={{ fontWeight: 900 }}>{cell.raw} {cell.unit}</div>
+                        <div style={S.muted}>
+                          pts: <strong>{cell.points}</strong>{cell.rank ? ` • r#${cell.rank}` : ""} • {cell.status}
+                        </div>
                       </td>
                     );
                   })}
                 </tr>
               ))}
-              {leaderboardFiltered.length === 0 ? (
+
+              {pointsLeaderboard.length === 0 ? (
                 <tr>
                   <td style={S.td} colSpan={4 + (currentComp.workouts || []).length}>
                     <div style={{ fontWeight: 900 }}>No entries for this division yet.</div>
-                    <div style={{ ...S.muted, marginTop: 6 }}>Try “Overall” or submit scores for athletes/teams in this division.</div>
+                    <div style={{ ...S.muted, marginTop: 6 }}>Try “Overall” or submit scores for participants in this division.</div>
                   </td>
                 </tr>
               ) : null}
@@ -2142,6 +2207,9 @@ export default function App() {
     );
   }
 
+  /* ================================
+     WORKOUT EDITOR MODAL (includes scaling)
+================================ */
   function WorkoutEditorModal({ editor, onClose, onSave, divisions }) {
     const [draft, setDraft] = useState(editor.draft);
 
@@ -2345,18 +2413,13 @@ export default function App() {
     );
   }
 
-  // datetime-local helpers (local time UI)
+  // datetime-local helpers
   function isoToLocalInput(iso) {
     if (!iso) return "";
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     const pad = (n) => String(n).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    const mm = pad(d.getMonth() + 1);
-    const dd = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const min = pad(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
   function localInputToIso(localValue) {
@@ -2373,7 +2436,7 @@ export default function App() {
     <div style={{ ...S.row, marginTop: 14 }}>
       <div style={{ flex: "1 1 760px", ...S.card }}>
         <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin</div>
-        <div style={S.muted}>Global demo toggles. Organiser view includes the important qualifier controls.</div>
+        <div style={S.muted}>Global demo toggles.</div>
 
         <div style={S.divider} />
 
@@ -2381,48 +2444,30 @@ export default function App() {
           <div style={{ ...S.card, padding: 12 }}>
             <div style={{ fontWeight: 900 }}>Global controls</div>
             <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.hideLeaderboard}
-              onChange={() => toggleSetting("hideLeaderboard")}
-              label="Hide leaderboard"
-            />
+            <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboard" />
             <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.submissionsClosed}
-              onChange={() => toggleSetting("submissionsClosed")}
-              label="Close submissions"
-            />
+            <Toggle checked={data.settings.submissionsClosed} onChange={() => toggleSetting("submissionsClosed")} label="Close submissions" />
             <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.finalOnlyLeaderboard}
-              onChange={() => toggleSetting("finalOnlyLeaderboard")}
-              label="Final-only leaderboard"
-              hint="Non-staff see only head-judge-confirmed scores."
-            />
+            <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only leaderboard (non-staff)" />
             <div style={{ height: 10 }} />
-            <Toggle
-              checked={data.settings.allowProvisionalForStaff}
-              onChange={() => toggleSetting("allowProvisionalForStaff")}
-              label="Allow provisional for staff"
-              hint="Staff can see submissions/awaiting adjustments even in final-only."
-            />
+            <Toggle checked={data.settings.allowProvisionalForStaff} onChange={() => toggleSetting("allowProvisionalForStaff")} label="Allow provisional for staff" />
           </div>
 
           <div style={{ ...S.card, padding: 12 }}>
-            <div style={{ fontWeight: 900 }}>Workflow summary</div>
-            <div style={{ height: 8 }} />
-            <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.92 }}>
-              <li>Athlete/Team submits score (status: submitted)</li>
-              <li>Judge reviews and creates an adjustment (awaiting head judge)</li>
-              <li>Head Judge confirms → score becomes FINAL</li>
-              <li>Leaderboard tabs show Overall and per-division rankings</li>
-            </ol>
+            <div style={{ fontWeight: 900 }}>Points system</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>
+              For each workout: rank by direction → points = <strong>N - rank + 1</strong>. Missing score = <strong>0 points</strong>.
+              Totals aggregate across workouts for overall ranking.
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
 
+  /* ================================
+     APP ROOT
+================================ */
   return (
     <div style={S.page}>
       <div style={S.container}>
@@ -2437,6 +2482,4 @@ export default function App() {
     </div>
   );
 }
-``
 
-/**
