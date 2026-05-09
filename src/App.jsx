@@ -1,18 +1,18 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Throwdown Hub — Single-file Demo App.jsx
- * - No router
- * - No external UI imports (no shadcn, no "@/..." aliases)
- * - LocalStorage persistence
- * - Events Directory (calendar + list + CRUD + import/export)
- * - Competition demo (roles, athlete/team mode, judge/head judge workflows, hideable leaderboards)
+ * Throwdown Hub — Single-file Demo App.jsx (Role-specific UX)
+ * - Athlete/Team Manager: view workouts, submit online scores, see leaderboard
+ * - Judge: review submissions, adjust scores
+ * - Head Judge: confirm adjusted scores -> final
+ * - Organiser: set workouts + live windows, toggle leaderboard/submissions, manage everything
+ * - No router, no external UI imports, localStorage persistence
  */
 
 /* ================================
    LOCAL STORAGE
 ================================ */
-const LS_KEY = "tdh_single_file_demo_v2";
+const LS_KEY = "tdh_single_file_demo_v3";
 
 function safeParse(json, fallback) {
   try {
@@ -33,14 +33,10 @@ function saveData(data) {
 }
 
 /* ================================
-   SMALL UTILITIES
+   UTIL
 ================================ */
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
 }
 
 function yyyyMmDd(date) {
@@ -52,44 +48,33 @@ function yyyyMmDd(date) {
   return `${y}-${m}-${day}`;
 }
 
-function prettyDate(iso) {
-  if (!iso) return "";
-  const d = new Date(iso + "T00:00:00");
+function prettyDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function prettyDate(isoDate) {
+  if (!isoDate) return "—";
+  const d = new Date(isoDate + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return isoDate;
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function startOfMonth(year, monthIndex) {
-  return new Date(year, monthIndex, 1);
+function normaliseStr(s) {
+  return String(s ?? "").trim().toLowerCase();
 }
 
-function endOfMonth(year, monthIndex) {
-  return new Date(year, monthIndex + 1, 0);
-}
-
-function dayOfWeekMonStart(jsDay) {
-  // JS: Sun=0..Sat=6, we want Mon=0..Sun=6
-  return (jsDay + 6) % 7;
-}
-
-function buildMonthGrid(year, monthIndex) {
-  const first = startOfMonth(year, monthIndex);
-  const last = endOfMonth(year, monthIndex);
-
-  const firstDow = dayOfWeekMonStart(first.getDay());
-  const totalDays = last.getDate();
-
-  const cells = [];
-  // leading blanks
-  for (let i = 0; i < firstDow; i++) cells.push(null);
-  // days
-  for (let d = 1; d <= totalDays; d++) {
-    cells.push(new Date(year, monthIndex, d));
-  }
-  // trailing blanks to complete weeks (optional)
-  while (cells.length % 7 !== 0) cells.push(null);
-
-  return cells; // array of Date|null length multiple of 7
+function toNumberOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function downloadJson(filename, obj) {
@@ -104,37 +89,40 @@ function downloadJson(filename, obj) {
   URL.revokeObjectURL(url);
 }
 
-function normaliseStr(s) {
-  return String(s ?? "").trim().toLowerCase();
-}
-
-function scoreToNumber(v) {
-  // Allow numeric strings
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
 /* ================================
-   DEMO DATA
+   ROLES
 ================================ */
 const ROLES = ["spectator", "athlete", "team_manager", "judge", "head_judge", "organiser"];
 
+/* ================================
+   DEFAULT DEMO DATA
+================================ */
+// Helper: build default live windows in the near future
+function defaultWindow(hoursFromNowOpen, hoursDuration) {
+  const now = new Date();
+  const open = new Date(now.getTime() + hoursFromNowOpen * 3600 * 1000);
+  const close = new Date(open.getTime() + hoursDuration * 3600 * 1000);
+  return { openAt: open.toISOString(), closeAt: close.toISOString() };
+}
+
 const DEFAULT_DATA = {
-  meta: { version: 2, createdAt: new Date().toISOString() },
-  ui: {
-    tab: "directory", // directory | competition | admin
-    directoryView: "calendar", // calendar | list
-    compId: "comp_london",
-  },
+  meta: { version: 3, createdAt: new Date().toISOString() },
+
   role: "spectator",
   mode: "athlete", // athlete | team
+
+  ui: {
+    tab: "competition", // directory | competition | admin
+    compId: "comp_london",
+  },
+
   settings: {
     hideLeaderboard: false,
-    regClosed: false,
-    requireApproval: true,
-    finalOnlyLeaderboard: false, // if true, show only approved
-    allowProvisionalViewForJudges: true, // judges/organiser/head judge can see provisional even if finalOnlyLeaderboard on
+    submissionsClosed: false, // global gate
+    finalOnlyLeaderboard: false, // if true: only FINAL scores count/display for non-privileged
+    allowProvisionalForStaff: true, // staff can still see provisional when finalOnly is on
   },
+
   directory: {
     events: [
       {
@@ -146,57 +134,26 @@ const DEFAULT_DATA = {
         venue: "Docklands Arena",
         divisions: ["RX", "Scaled", "Masters 35+"],
         tags: ["throwdown", "two-day"],
-        status: "upcoming", // upcoming | past | cancelled
+        status: "upcoming",
         regOpen: true,
         website: "",
         instagram: "@throwdownhub",
         notes: "Demo event — replace with real data later.",
       },
-      {
-        id: "evt_midlands_duo",
-        name: "Midlands Duo Battle",
-        startDate: "2026-07-12",
-        endDate: "2026-07-12",
-        city: "Birmingham",
-        venue: "Unit 7 Training Hall",
-        divisions: ["Intermediate", "Scaled"],
-        tags: ["pairs", "indoor"],
-        status: "upcoming",
-        regOpen: true,
-        website: "",
-        instagram: "",
-        notes: "",
-      },
-      {
-        id: "evt_north_warriors",
-        name: "North Warriors Cup",
-        startDate: "2026-04-05",
-        endDate: "2026-04-05",
-        city: "Manchester",
-        venue: "North Hall",
-        divisions: ["RX", "Intermediate"],
-        tags: ["single-day"],
-        status: "past",
-        regOpen: false,
-        website: "",
-        instagram: "",
-        notes: "Past demo event.",
-      },
     ],
   },
+
   competitions: [
     {
       id: "comp_london",
-      name: "London Throwdown (Demo Comp)",
+      name: "London Throwdown (Online Qualifier Demo)",
       date: "2026-06-20",
       location: "London",
-      description: "Single-file demo competition with roles, judging and approvals.",
+      description:
+        "Role-based demo: athletes submit online scores, judges adjust, head judge confirms. Organiser controls workouts + live windows.",
       divisions: ["RX", "Scaled", "Intermediate", "Masters 35+"],
-      workouts: [
-        { id: "w1", name: "Event 1 — Sprint", scoring: "time", sort: "asc", unit: "sec" },
-        { id: "w2", name: "Event 2 — AMRAP", scoring: "reps", sort: "desc", unit: "reps" },
-        { id: "w3", name: "Event 3 — Heavy", scoring: "load", sort: "desc", unit: "kg" },
-      ],
+
+      // Participants
       athletes: [
         { name: "Sam Carter", division: "RX" },
         { name: "Jess Morgan", division: "Scaled" },
@@ -207,81 +164,97 @@ const DEFAULT_DATA = {
         { name: "Team Alpha", division: "RX", members: ["Sam Carter", "Aisha Khan"] },
         { name: "Team Beta", division: "Scaled", members: ["Jess Morgan", "Mike Patel"] },
       ],
-      registrations: {
-        athletes: {
-          // "Name": { division, status }
-          "Sam Carter": { division: "RX", status: "confirmed" },
-          "Jess Morgan": { division: "Scaled", status: "confirmed" },
-          "Mike Patel": { division: "Intermediate", status: "confirmed" },
-          "Aisha Khan": { division: "RX", status: "confirmed" },
-        },
-        teams: {
-          "Team Alpha": { division: "RX", status: "confirmed" },
-          "Team Beta": { division: "Scaled", status: "confirmed" },
-        },
-      },
-      judgePool: ["Jordan Lee", "Taylor Price", "Charlie Scott"],
-      judgeAssignments: {
-        // workoutId -> judgeName -> [participantNames]
-        w1: { "Jordan Lee": ["Sam Carter", "Jess Morgan"], "Taylor Price": ["Mike Patel", "Aisha Khan"] },
-        w2: { "Charlie Scott": ["Sam Carter", "Aisha Khan"], "Taylor Price": ["Jess Morgan", "Mike Patel"] },
-        w3: { "Jordan Lee": ["Sam Carter", "Mike Patel"], "Charlie Scott": ["Jess Morgan", "Aisha Khan"] },
-      },
-      scores: {
-        // workoutId -> participantName -> { value, status, judge, note, updatedAt }
-        w1: {},
-        w2: {},
-        w3: {},
-      },
-      reviewQueue: [
-        // { id, workoutId, participant, value, judge, action, note, createdAt }
-      ],
-      audit: [
-        // { id, at, whoRole, whoName, message }
-      ],
-    },
-    {
-      id: "comp_pairs",
-      name: "Pairs Bash (Demo Comp)",
-      date: "2026-07-12",
-      location: "Birmingham",
-      description: "Second demo comp with teams-focused format.",
-      divisions: ["RX", "Scaled"],
+
+      // Workouts (dummy detailed specs)
       workouts: [
-        { id: "p1", name: "Pairs 1 — Sync", scoring: "reps", sort: "desc", unit: "reps" },
-        { id: "p2", name: "Pairs 2 — Grinder", scoring: "time", sort: "asc", unit: "sec" },
-      ],
-      athletes: [
-        { name: "Ethan Rowe", division: "RX" },
-        { name: "Maya Singh", division: "RX" },
-        { name: "Noah James", division: "Scaled" },
-        { name: "Chloe Evans", division: "Scaled" },
-      ],
-      teams: [
-        { name: "Duo One", division: "RX", members: ["Ethan Rowe", "Maya Singh"] },
-        { name: "Duo Two", division: "Scaled", members: ["Noah James", "Chloe Evans"] },
-      ],
-      registrations: {
-        athletes: {},
-        teams: {
-          "Duo One": { division: "RX", status: "confirmed" },
-          "Duo Two": { division: "Scaled", status: "confirmed" },
+        {
+          id: "w1",
+          name: "Qualifier 1 — Engine",
+          divisionNotes: "All divisions",
+          scoreType: "time", // time | reps | load | points
+          sort: "asc", // asc for time, desc for reps/load/points
+          unit: "sec",
+          cap: "12:00",
+          tiebreak: "Split time at round 6",
+          equipment: ["Row erg", "Pull-up bar", "Kettlebell (24/16)"],
+          standards: [
+            "Row for calories shown on monitor",
+            "Chest-to-bar for RX / Pull-ups for Scaled",
+            "KB swings overhead (American) – arms locked out",
+          ],
+          description:
+            "For time: 30/24 cal row, 30 C2B (or pull-ups), 60 KB swings (24/16).",
+          media: { demoVideoUrl: "", scorecardUrl: "" },
+          liveWindow: defaultWindow(2, 72), // opens in 2 hours for 3 days
         },
-      },
-      judgePool: ["Avery Woods", "Riley Chen"],
-      judgeAssignments: {
-        p1: { "Avery Woods": ["Duo One"], "Riley Chen": ["Duo Two"] },
-        p2: { "Avery Woods": ["Duo One"], "Riley Chen": ["Duo Two"] },
-      },
-      scores: { p1: {}, p2: {} },
-      reviewQueue: [],
+        {
+          id: "w2",
+          name: "Qualifier 2 — AMRAP",
+          divisionNotes: "Scaled uses lighter DB",
+          scoreType: "reps",
+          sort: "desc",
+          unit: "reps",
+          cap: "15:00",
+          tiebreak: "Time to finish round 5",
+          equipment: ["Dumbbells (22.5/15)", "Box (24/20)", "Floor space"],
+          standards: [
+            "DB snatch: one head touches floor each rep",
+            "Box jump overs: two-foot takeoff, face box optional",
+            "Burpee over DB: chest + thighs touch floor",
+          ],
+          description:
+            "AMRAP 15: 10 DB snatch, 12 box jump overs, 14 burpee over DB.",
+          media: { demoVideoUrl: "", scorecardUrl: "" },
+          liveWindow: defaultWindow(2, 72),
+        },
+        {
+          id: "w3",
+          name: "Qualifier 3 — Strength Ladder",
+          divisionNotes: "RX: clean & jerk, others: clean only",
+          scoreType: "load",
+          sort: "desc",
+          unit: "kg",
+          cap: "10:00",
+          tiebreak: "Fastest time to heaviest successful lift",
+          equipment: ["Barbell", "Plates", "Collars"],
+          standards: [
+            "Full lockout overhead required for C&J (RX)",
+            "No bouncing on shoulders between reps",
+            "Video must show plates clearly",
+          ],
+          description:
+            "Build to a heavy complex (1 clean + 1 jerk) within 10 minutes.",
+          media: { demoVideoUrl: "", scorecardUrl: "" },
+          liveWindow: defaultWindow(2, 72),
+        },
+      ],
+
+      // Online submissions from athletes/teams:
+      // submissions[workoutId][participant] = { value, videoUrl, notes, submittedAt, status, judgeNote }
+      // status: "submitted" | "needs_change" | "withdrawn"
+      submissions: {},
+
+      // Judge adjustments awaiting head judge confirmation:
+      // adjustments = [{ id, workoutId, participant, originalValue, adjustedValue, judgeName, judgeNote, adjustedAt, status }]
+      // status: "awaiting_head_judge" | "rejected" | "confirmed"
+      adjustments: [],
+
+      // Final confirmed scores:
+      // finalScores[workoutId][participant] = { value, confirmedBy, confirmedAt, note }
+      finalScores: {},
+
+      // Staff identity (demo)
+      judgePool: ["Jordan Lee", "Taylor Price", "Charlie Scott"],
+      headJudgePool: ["Harper Adams"],
+
+      // Audit
       audit: [],
     },
   ],
 };
 
 /* ================================
-   SIMPLE STYLES (inline)
+   STYLES
 ================================ */
 const S = {
   page: {
@@ -293,7 +266,7 @@ const S = {
   },
   container: { maxWidth: 1180, margin: "0 auto", padding: 18 },
   headerRow: { display: "flex", gap: 14, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" },
-  title: { fontSize: 22, fontWeight: 800, letterSpacing: 0.2 },
+  title: { fontSize: 22, fontWeight: 900, letterSpacing: 0.2 },
   subTitle: { fontSize: 12, opacity: 0.8, marginTop: 2 },
   card: {
     background: "rgba(255,255,255,0.06)",
@@ -303,17 +276,6 @@ const S = {
     boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
   },
   row: { display: "flex", gap: 12, flexWrap: "wrap" },
-  col: { display: "flex", flexDirection: "column", gap: 10 },
-  pill: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "6px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(0,0,0,0.18)",
-    fontSize: 12,
-  },
   btn: {
     cursor: "pointer",
     userSelect: "none",
@@ -322,7 +284,7 @@ const S = {
     border: "1px solid rgba(255,255,255,0.16)",
     background: "rgba(255,255,255,0.07)",
     color: "#e7eefc",
-    fontWeight: 650,
+    fontWeight: 750,
     fontSize: 13,
   },
   btnPrimary: {
@@ -333,7 +295,7 @@ const S = {
     border: "1px solid rgba(120,190,255,0.35)",
     background: "linear-gradient(180deg, rgba(45,140,255,0.35), rgba(45,140,255,0.20))",
     color: "#eaf3ff",
-    fontWeight: 750,
+    fontWeight: 850,
     fontSize: 13,
   },
   btnDanger: {
@@ -344,19 +306,8 @@ const S = {
     border: "1px solid rgba(255,110,110,0.35)",
     background: "linear-gradient(180deg, rgba(255,70,70,0.25), rgba(255,70,70,0.12))",
     color: "#ffe9e9",
-    fontWeight: 750,
+    fontWeight: 850,
     fontSize: 13,
-  },
-  btnSmall: {
-    cursor: "pointer",
-    userSelect: "none",
-    padding: "7px 9px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.16)",
-    background: "rgba(255,255,255,0.07)",
-    color: "#e7eefc",
-    fontWeight: 650,
-    fontSize: 12,
   },
   input: {
     width: "100%",
@@ -367,8 +318,18 @@ const S = {
     color: "#e7eefc",
     outline: "none",
   },
-  label: { fontSize: 12, opacity: 0.85, fontWeight: 650 },
-  divider: { height: 1, background: "rgba(255,255,255,0.12)", margin: "10px 0" },
+  label: { fontSize: 12, opacity: 0.85, fontWeight: 800 },
+  muted: { opacity: 0.78, fontSize: 12 },
+  pill: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.18)",
+    fontSize: 12,
+  },
   tag: {
     display: "inline-flex",
     padding: "2px 8px",
@@ -378,7 +339,7 @@ const S = {
     fontSize: 12,
     opacity: 0.95,
   },
-  muted: { opacity: 0.78, fontSize: 12 },
+  divider: { height: 1, background: "rgba(255,255,255,0.12)", margin: "10px 0" },
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
   th: { textAlign: "left", fontSize: 12, opacity: 0.8, padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.12)" },
   td: { padding: "10px", borderBottom: "1px solid rgba(255,255,255,0.08)", verticalAlign: "top", fontSize: 13 },
@@ -387,10 +348,6 @@ const S = {
 function Button({ variant = "default", style, ...props }) {
   const base = variant === "primary" ? S.btnPrimary : variant === "danger" ? S.btnDanger : S.btn;
   return <button style={{ ...base, ...style }} {...props} />;
-}
-
-function SmallButton({ style, ...props }) {
-  return <button style={{ ...S.btnSmall, ...style }} {...props} />;
 }
 
 function Field({ label, children, style }) {
@@ -418,7 +375,7 @@ function Toggle({ checked, onChange, label, hint }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
       <div>
-        <div style={{ fontWeight: 750, fontSize: 13 }}>{label}</div>
+        <div style={{ fontWeight: 900, fontSize: 13 }}>{label}</div>
         {hint ? <div style={{ ...S.muted, marginTop: 2 }}>{hint}</div> : null}
       </div>
       <button
@@ -456,568 +413,567 @@ function Toggle({ checked, onChange, label, hint }) {
 ================================ */
 export default function App() {
   const [data, setData] = useState(() => loadData() || DEFAULT_DATA);
+  const [toast, setToast] = useState(null); // { type, msg }
 
-  // Persist
-  useEffect(() => {
-    saveData(data);
-  }, [data]);
+  useEffect(() => saveData(data), [data]);
 
-  // Ensure compId exists
+  const role = data.role;
+  const mode = data.mode;
+
+  const isStaff = role === "judge" || role === "head_judge" || role === "organiser";
+  const isOrganiser = role === "organiser";
+  const isJudge = role === "judge";
+  const isHeadJudge = role === "head_judge";
+  const isAthleteSide = role === "athlete" || role === "team_manager";
+
   const currentComp = useMemo(() => {
-    const found = data.competitions.find((c) => c.id === data.ui.compId) || data.competitions[0];
-    return found;
+    const found = data.competitions.find((c) => c.id === data.ui.compId);
+    return found || data.competitions[0];
   }, [data.competitions, data.ui.compId]);
 
-  // Derived: role helpers
-  const role = data.role;
-  const isOrganiser = role === "organiser";
-  const isHeadJudge = role === "head_judge";
-  const isJudge = role === "judge";
-  const isTeamManager = role === "team_manager";
-  const isAthlete = role === "athlete";
-  const canScore = isJudge || isOrganiser; // judges + organisers can submit
-  const canReview = isHeadJudge || isOrganiser; // head judge + organiser can approve/override
-  const canEditDirectory = isOrganiser; // keep simple: only organiser edits events
+  const now = Date.now();
 
-  // UI
-  const tab = data.ui.tab;
-
-  const setTab = (t) => setData((d) => ({ ...d, ui: { ...d.ui, tab: t } }));
-  const setDirectoryView = (v) => setData((d) => ({ ...d, ui: { ...d.ui, directoryView: v } }));
-  const setCompId = (id) => setData((d) => ({ ...d, ui: { ...d.ui, compId: id } }));
-
-  const setRole = (r) => setData((d) => ({ ...d, role: r }));
-  const toggleMode = () =>
-    setData((d) => ({ ...d, mode: d.mode === "athlete" ? "team" : "athlete" }));
-
-  const toggleSetting = (key) =>
-    setData((d) => ({ ...d, settings: { ...d.settings, [key]: !d.settings[key] } }));
-
-  const resetDemo = () => {
-    localStorage.removeItem(LS_KEY);
-    setData(DEFAULT_DATA);
-  };
-
-  /* ================================
-     DIRECTORY — CRUD + Filters + Calendar/List
-  ================================ */
-  const [dirMonth, setDirMonth] = useState(() => {
-    const now = new Date();
-    return { year: now.getFullYear(), monthIndex: now.getMonth() };
-  });
-  const [selectedDate, setSelectedDate] = useState(() => yyyyMmDd(new Date()));
-  const [dirFilters, setDirFilters] = useState({
-    q: "",
-    status: "all",
-    division: "all",
-    reg: "all",
-  });
-
-  const directoryEvents = data.directory.events;
-
-  const divisionsInDirectory = useMemo(() => {
-    const set = new Set();
-    directoryEvents.forEach((e) => (e.divisions || []).forEach((d) => set.add(d)));
-    return ["all", ...Array.from(set).sort()];
-  }, [directoryEvents]);
-
-  const filteredDirectoryEvents = useMemo(() => {
-    const q = normaliseStr(dirFilters.q);
-    return directoryEvents
-      .slice()
-      .sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""))
-      .filter((e) => {
-        if (dirFilters.status !== "all" && e.status !== dirFilters.status) return false;
-        if (dirFilters.reg !== "all") {
-          const wantOpen = dirFilters.reg === "open";
-          if (!!e.regOpen !== wantOpen) return false;
-        }
-        if (dirFilters.division !== "all") {
-          if (!(e.divisions || []).includes(dirFilters.division)) return false;
-        }
-        if (q) {
-          const blob = [
-            e.name,
-            e.city,
-            e.venue,
-            (e.divisions || []).join(" "),
-            (e.tags || []).join(" "),
-            e.notes,
-          ]
-            .join(" ")
-            .toLowerCase();
-          if (!blob.includes(q)) return false;
-        }
-        return true;
-      });
-  }, [directoryEvents, dirFilters]);
-
-  const eventsByDate = useMemo(() => {
-    // map date -> events that include that date (start..end)
-    const map = new Map();
-    const add = (dateIso, evt) => {
-      const arr = map.get(dateIso) || [];
-      arr.push(evt);
-      map.set(dateIso, arr);
-    };
-    directoryEvents.forEach((e) => {
-      const start = e.startDate ? new Date(e.startDate + "T00:00:00") : null;
-      const end = e.endDate ? new Date(e.endDate + "T00:00:00") : start;
-      if (!start || Number.isNaN(start.getTime())) return;
-      const endD = end && !Number.isNaN(end.getTime()) ? end : start;
-      const days = Math.max(1, Math.round((endD - start) / 86400000) + 1);
-      for (let i = 0; i < days; i++) {
-        const d = new Date(start.getTime() + i * 86400000);
-        add(yyyyMmDd(d), e);
-      }
-    });
-    // Sort each day list
-    for (const [k, arr] of map.entries()) {
-      arr.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-      map.set(k, arr);
-    }
-    return map;
-  }, [directoryEvents]);
-
-  const monthGrid = useMemo(() => buildMonthGrid(dirMonth.year, dirMonth.monthIndex), [dirMonth]);
-
-  // Directory editor modal
-  const [eventEditor, setEventEditor] = useState(null); // { mode: "new"|"edit", draft: eventObj }
-  const openNewEvent = () => {
-    const today = yyyyMmDd(new Date());
-    setEventEditor({
-      mode: "new",
-      draft: {
-        id: uid("evt"),
-        name: "",
-        startDate: today,
-        endDate: today,
-        city: "",
-        venue: "",
-        divisions: ["RX"],
-        tags: [],
-        status: "upcoming",
-        regOpen: true,
-        website: "",
-        instagram: "",
-        notes: "",
-      },
-    });
-  };
-  const openEditEvent = (evt) => {
-    setEventEditor({ mode: "edit", draft: JSON.parse(JSON.stringify(evt)) });
-  };
-  const closeEventEditor = () => setEventEditor(null);
-
-  const upsertEvent = (evt) => {
-    setData((d) => {
-      const events = d.directory.events.slice();
-      const idx = events.findIndex((x) => x.id === evt.id);
-      if (idx >= 0) events[idx] = evt;
-      else events.push(evt);
-      return { ...d, directory: { ...d.directory, events } };
-    });
-    setEventEditor(null);
-  };
-
-  const deleteEvent = (id) => {
-    setData((d) => ({
-      ...d,
-      directory: { ...d.directory, events: d.directory.events.filter((e) => e.id !== id) },
-    }));
-  };
-
-  // Import / Export directory (or full app)
-  const fileInputRef = useRef(null);
-
-  const exportDirectory = () => {
-    downloadJson(`tdh_directory_${yyyyMmDd(new Date())}.json`, data.directory);
-  };
-
-  const exportAll = () => {
-    downloadJson(`tdh_demo_all_${yyyyMmDd(new Date())}.json`, data);
-  };
-
-  const importJson = async (file) => {
-    const text = await file.text();
-    const obj = safeParse(text, null);
-    if (!obj) return { ok: false, error: "Invalid JSON." };
-
-    // Accept either full data (has competitions + directory) or directory-only
-    if (obj.directory && obj.competitions) {
-      setData(obj);
-      return { ok: true };
-    }
-    if (obj.events && Array.isArray(obj.events)) {
-      setData((d) => ({ ...d, directory: { events: obj.events } }));
-      return { ok: true };
-    }
-    if (obj.directory && obj.directory.events && Array.isArray(obj.directory.events)) {
-      setData((d) => ({ ...d, directory: { events: obj.directory.events } }));
-      return { ok: true };
-    }
-    return { ok: false, error: "JSON didn’t match expected schema." };
-  };
-
-  const [toast, setToast] = useState(null); // { type, msg }
-  const showToast = (type, msg) => {
+  function showToast(type, msg) {
     setToast({ type, msg });
     window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast(null), 2800);
-  };
+    showToast._t = window.setTimeout(() => setToast(null), 2600);
+  }
 
-  /* ================================
-     COMPETITION — registrations, scoring, review queue, leaderboard
-  ================================ */
-  const [compView, setCompView] = useState("overview"); // overview | register | scoring | review | leaderboard | audit
-  const setCompViewSafe = (v) => setCompView(v);
+  function resetDemo() {
+    localStorage.removeItem(LS_KEY);
+    setData(DEFAULT_DATA);
+  }
 
-  const getComp = (compId) => data.competitions.find((c) => c.id === compId);
+  function setRole(r) {
+    setData((d) => ({ ...d, role: r }));
+  }
 
-  const updateComp = (compId, updater) => {
+  function toggleMode() {
+    setData((d) => ({ ...d, mode: d.mode === "athlete" ? "team" : "athlete" }));
+  }
+
+  function setTab(tab) {
+    setData((d) => ({ ...d, ui: { ...d.ui, tab } }));
+  }
+
+  function setCompId(compId) {
+    setData((d) => ({ ...d, ui: { ...d.ui, compId } }));
+  }
+
+  function toggleSetting(key) {
+    setData((d) => ({ ...d, settings: { ...d.settings, [key]: !d.settings[key] } }));
+  }
+
+  function updateComp(compId, updater) {
     setData((d) => {
       const comps = d.competitions.slice();
       const idx = comps.findIndex((c) => c.id === compId);
       if (idx < 0) return d;
-      const next = updater(JSON.parse(JSON.stringify(comps[idx])));
+      const draft = JSON.parse(JSON.stringify(comps[idx]));
+      const next = updater(draft) || draft;
       comps[idx] = next;
       return { ...d, competitions: comps };
     });
-  };
+  }
 
-  const addAudit = (compId, message, whoName = "") => {
-    updateComp(compId, (c) => {
+  function addAudit(message) {
+    updateComp(currentComp.id, (c) => {
       c.audit = c.audit || [];
       c.audit.unshift({
         id: uid("audit"),
         at: new Date().toISOString(),
         whoRole: role,
-        whoName: whoName || (role === "judge" ? "Judge" : role === "head_judge" ? "Head Judge" : ""),
         message,
       });
       return c;
     });
-  };
+  }
 
-  const participants = useMemo(() => {
-    const c = currentComp;
-    if (!c) return [];
-    if (data.mode === "athlete") {
-      return (c.athletes || []).map((a) => a.name);
-    }
-    return (c.teams || []).map((t) => t.name);
-  }, [currentComp, data.mode]);
+  // Export/import
+  const fileInputRef = useRef(null);
+
+  function exportAll() {
+    downloadJson(`tdh_demo_all_${yyyyMmDd(new Date())}.json`, data);
+  }
+
+  async function importJson(file) {
+    const text = await file.text();
+    const obj = safeParse(text, null);
+    if (!obj) return { ok: false, error: "Invalid JSON." };
+    if (!obj.competitions || !Array.isArray(obj.competitions)) return { ok: false, error: "Missing competitions array." };
+    setData(obj);
+    return { ok: true };
+  }
+
+  // Participants
+  const participantList = useMemo(() => {
+    if (!currentComp) return [];
+    if (mode === "athlete") return (currentComp.athletes || []).map((a) => a.name);
+    return (currentComp.teams || []).map((t) => t.name);
+  }, [currentComp, mode]);
 
   const participantMeta = useMemo(() => {
-    const c = currentComp;
     const map = new Map();
-    if (!c) return map;
-    (c.athletes || []).forEach((a) => map.set(a.name, { type: "athlete", division: a.division }));
-    (c.teams || []).forEach((t) => map.set(t.name, { type: "team", division: t.division, members: t.members || [] }));
+    if (!currentComp) return map;
+    (currentComp.athletes || []).forEach((a) => map.set(a.name, { type: "athlete", division: a.division }));
+    (currentComp.teams || []).forEach((t) => map.set(t.name, { type: "team", division: t.division, members: t.members || [] }));
     return map;
   }, [currentComp]);
 
-  const isRegistered = (name) => {
-    const c = currentComp;
-    if (!c) return false;
-    if (data.mode === "athlete") return !!c.registrations?.athletes?.[name];
-    return !!c.registrations?.teams?.[name];
-  };
+  // Workout live logic
+  function workoutIsLive(w) {
+    const open = w.liveWindow?.openAt ? new Date(w.liveWindow.openAt).getTime() : null;
+    const close = w.liveWindow?.closeAt ? new Date(w.liveWindow.closeAt).getTime() : null;
+    if (open && now < open) return false;
+    if (close && now > close) return false;
+    return true;
+  }
 
-  const registerParticipant = (name) => {
-    if (data.settings.regClosed) {
-      showToast("warn", "Registration is currently closed.");
+  function workoutLiveLabel(w) {
+    const live = workoutIsLive(w);
+    const openAt = w.liveWindow?.openAt;
+    const closeAt = w.liveWindow?.closeAt;
+    if (live) return `LIVE (closes ${prettyDateTime(closeAt)})`;
+    if (openAt && now < new Date(openAt).getTime()) return `Opens ${prettyDateTime(openAt)}`;
+    if (closeAt && now > new Date(closeAt).getTime()) return `Closed ${prettyDateTime(closeAt)}`;
+    return "Not live";
+  }
+
+  // Permissions
+  const submissionsClosed = data.settings.submissionsClosed;
+  const leaderboardHidden = data.settings.hideLeaderboard;
+
+  const finalOnly = data.settings.finalOnlyLeaderboard;
+  const staffCanSeeProvisional = data.settings.allowProvisionalForStaff;
+
+  // ================================
+  // Athlete submissions
+  // ================================
+  const [athleteView, setAthleteView] = useState("workouts"); // workouts | submit | leaderboard | my_submissions
+  const [mySelection, setMySelection] = useState(() => participantList[0] || "");
+
+  useEffect(() => {
+    if (!participantList.includes(mySelection)) {
+      setMySelection(participantList[0] || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, data.ui.compId, participantList.join("|")]);
+
+  const [submitDraft, setSubmitDraft] = useState({
+    workoutId: "",
+    value: "",
+    videoUrl: "",
+    notes: "",
+  });
+
+  useEffect(() => {
+    const firstWorkout = currentComp?.workouts?.[0]?.id || "";
+    setSubmitDraft((d) => ({ ...d, workoutId: firstWorkout }));
+  }, [data.ui.compId]);
+
+  function submitOnlineScore() {
+    const comp = currentComp;
+    if (!comp) return;
+
+    if (submissionsClosed) {
+      showToast("warn", "Submissions are closed by the organiser.");
       return;
     }
-    updateComp(currentComp.id, (c) => {
-      c.registrations = c.registrations || { athletes: {}, teams: {} };
-      if (data.mode === "athlete") {
-        const div = participantMeta.get(name)?.division || c.divisions?.[0] || "Open";
-        c.registrations.athletes[name] = { division: div, status: "confirmed" };
-      } else {
-        const div = participantMeta.get(name)?.division || c.divisions?.[0] || "Open";
-        c.registrations.teams[name] = { division: div, status: "confirmed" };
-      }
-      return c;
-    });
-    addAudit(currentComp.id, `Registered ${name} (${data.mode}).`);
-    showToast("ok", `${name} registered.`);
-  };
 
-  const unregisterParticipant = (name) => {
-    if (data.settings.regClosed) {
-      showToast("warn", "Registration is currently closed.");
-      return;
-    }
-    updateComp(currentComp.id, (c) => {
-      c.registrations = c.registrations || { athletes: {}, teams: {} };
-      if (data.mode === "athlete") delete c.registrations.athletes[name];
-      else delete c.registrations.teams[name];
-      return c;
-    });
-    addAudit(currentComp.id, `Unregistered ${name} (${data.mode}).`);
-    showToast("ok", `${name} removed from registrations.`);
-  };
-
-  const assignedJudgeFor = (workoutId, participantName) => {
-    const c = currentComp;
-    const assignment = c?.judgeAssignments?.[workoutId] || {};
-    const entries = Object.entries(assignment);
-    for (const [j, list] of entries) {
-      if ((list || []).includes(participantName)) return j;
-    }
-    return "";
-  };
-
-  const canThisJudgeScore = (workoutId, participantName) => {
-    if (!canScore) return false;
-    // If role is judge, only allow if assigned to them (strict). Organiser can score anyone.
-    if (role === "organiser") return true;
-    const assigned = assignedJudgeFor(workoutId, participantName);
-    // For a plain judge, we don't know their "identity" in demo. We'll allow judge to pick a name from judgePool and enforce assignment.
-    return !!assigned;
-  };
-
-  const submitScore = (workoutId, participantName, value, judgeName, note = "") => {
-    const c = currentComp;
-    if (!c) return;
-
-    const w = c.workouts.find((x) => x.id === workoutId);
+    const w = comp.workouts.find((x) => x.id === submitDraft.workoutId);
     if (!w) return;
 
-    const n = scoreToNumber(value);
+    if (!workoutIsLive(w)) {
+      showToast("warn", "This workout is not live right now.");
+      return;
+    }
+
+    const n = toNumberOrNull(submitDraft.value);
     if (n === null) {
       showToast("warn", "Score must be a number.");
       return;
     }
 
-    const assigned = assignedJudgeFor(workoutId, participantName);
-    if (role === "judge" && judgeName && assigned && judgeName !== assigned) {
-      showToast("warn", `This lane is assigned to ${assigned}.`);
+    const participant = mySelection;
+    if (!participant) {
+      showToast("warn", "Select an athlete/team.");
       return;
     }
 
-    updateComp(c.id, (compDraft) => {
-      compDraft.scores = compDraft.scores || {};
-      compDraft.scores[workoutId] = compDraft.scores[workoutId] || {};
-      const requireApproval = data.settings.requireApproval;
-      const status = requireApproval ? "pending" : "approved";
-      compDraft.scores[workoutId][participantName] = {
+    updateComp(comp.id, (c) => {
+      c.submissions = c.submissions || {};
+      c.submissions[w.id] = c.submissions[w.id] || {};
+      c.submissions[w.id][participant] = {
         value: n,
-        status,
-        judge: judgeName || (role === "organiser" ? "Organiser" : assigned || "Judge"),
-        note: note || "",
-        updatedAt: new Date().toISOString(),
+        videoUrl: submitDraft.videoUrl || "",
+        notes: submitDraft.notes || "",
+        submittedAt: new Date().toISOString(),
+        status: "submitted",
+        judgeNote: "",
       };
+      return c;
+    });
 
-      if (requireApproval) {
-        compDraft.reviewQueue = compDraft.reviewQueue || [];
-        compDraft.reviewQueue.unshift({
-          id: uid("rq"),
-          workoutId,
-          participant: participantName,
-          value: n,
-          judge: judgeName || (role === "organiser" ? "Organiser" : assigned || "Judge"),
-          action: "submitted",
-          note: note || "",
-          createdAt: new Date().toISOString(),
+    addAudit(`Online submission: ${participant} submitted ${n} for ${w.name}`);
+    showToast("ok", "Submitted! Judge will review.");
+  }
+
+  // ================================
+  // Judge review & adjust
+  // ================================
+  const [judgeView, setJudgeView] = useState("review"); // review | adjusted_queue | leaderboard
+  const [judgeName, setJudgeName] = useState(() => currentComp?.judgePool?.[0] || "Judge");
+
+  useEffect(() => {
+    setJudgeName(currentComp?.judgePool?.[0] || "Judge");
+  }, [data.ui.compId]);
+
+  const submissionsFlat = useMemo(() => {
+    const c = currentComp;
+    if (!c) return [];
+    const rows = [];
+    const subs = c.submissions || {};
+    for (const w of c.workouts || []) {
+      const per = subs[w.id] || {};
+      for (const [participant, s] of Object.entries(per)) {
+        rows.push({
+          workoutId: w.id,
+          workoutName: w.name,
+          participant,
+          division: participantMeta.get(participant)?.division || "",
+          value: s.value,
+          videoUrl: s.videoUrl,
+          notes: s.notes,
+          submittedAt: s.submittedAt,
+          status: s.status,
+          judgeNote: s.judgeNote || "",
         });
       }
+    }
+    // newest first
+    rows.sort((a, b) => String(b.submittedAt || "").localeCompare(String(a.submittedAt || "")));
+    return rows;
+  }, [currentComp, participantMeta]);
 
-      return compDraft;
-    });
-
-    addAudit(c.id, `Score submitted: ${participantName} — ${w.name} = ${n} ${w.unit} (${data.settings.requireApproval ? "pending" : "approved"}).`);
-    showToast("ok", "Score submitted.");
-  };
-
-  const approveQueueItem = (itemId) => {
-    updateComp(currentComp.id, (c) => {
-      const item = (c.reviewQueue || []).find((x) => x.id === itemId);
-      if (!item) return c;
-      c.scores[item.workoutId] = c.scores[item.workoutId] || {};
-      const s = c.scores[item.workoutId][item.participant];
-      if (s) s.status = "approved";
-      c.reviewQueue = (c.reviewQueue || []).filter((x) => x.id !== itemId);
-      return c;
-    });
-    addAudit(currentComp.id, `Approved score: ${itemId}`);
-    showToast("ok", "Approved.");
-  };
-
-  const requestChangeQueueItem = (itemId, message) => {
-    updateComp(currentComp.id, (c) => {
-      const item = (c.reviewQueue || []).find((x) => x.id === itemId);
-      if (!item) return c;
-      c.scores[item.workoutId] = c.scores[item.workoutId] || {};
-      const s = c.scores[item.workoutId][item.participant];
-      if (s) {
-        s.status = "needs_change";
-        s.note = message || s.note || "Change requested.";
-        s.updatedAt = new Date().toISOString();
+  const [judgeFilter, setJudgeFilter] = useState({ q: "", workoutId: "all", status: "submitted" });
+  const judgeFiltered = useMemo(() => {
+    const q = normaliseStr(judgeFilter.q);
+    return submissionsFlat.filter((r) => {
+      if (judgeFilter.workoutId !== "all" && r.workoutId !== judgeFilter.workoutId) return false;
+      if (judgeFilter.status !== "all" && r.status !== judgeFilter.status) return false;
+      if (q) {
+        const blob = `${r.participant} ${r.workoutName} ${r.division} ${r.notes}`.toLowerCase();
+        if (!blob.includes(q)) return false;
       }
-      // keep item but mark
-      item.action = "change_requested";
-      item.note = message || item.note || "";
-      item.createdAt = new Date().toISOString();
-      return c;
+      return true;
     });
-    addAudit(currentComp.id, `Change requested: ${itemId} (${message || "no note"})`);
-    showToast("ok", "Change requested.");
-  };
+  }, [submissionsFlat, judgeFilter]);
 
-  const overrideQueueItem = (itemId, newValue, note) => {
-    const n = scoreToNumber(newValue);
+  const [adjustDraft, setAdjustDraft] = useState({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
+
+  function startAdjust(row) {
+    setAdjustDraft({
+      id: uid("adj"),
+      workoutId: row.workoutId,
+      participant: row.participant,
+      adjustedValue: String(row.value ?? ""),
+      note: "",
+    });
+  }
+
+  function saveAdjustment() {
+    const c = currentComp;
+    if (!c) return;
+
+    const n = toNumberOrNull(adjustDraft.adjustedValue);
     if (n === null) {
-      showToast("warn", "Override value must be a number.");
+      showToast("warn", "Adjusted score must be a number.");
       return;
     }
-    updateComp(currentComp.id, (c) => {
-      const item = (c.reviewQueue || []).find((x) => x.id === itemId);
-      if (!item) return c;
-      c.scores[item.workoutId] = c.scores[item.workoutId] || {};
-      c.scores[item.workoutId][item.participant] = {
-        value: n,
-        status: "approved",
-        judge: "Head Judge Override",
-        note: note || "Override applied.",
-        updatedAt: new Date().toISOString(),
-      };
-      c.reviewQueue = (c.reviewQueue || []).filter((x) => x.id !== itemId);
-      return c;
-    });
-    addAudit(currentComp.id, `Override applied: ${itemId} => ${n}`);
-    showToast("ok", "Override applied.");
-  };
 
+    const w = c.workouts.find((x) => x.id === adjustDraft.workoutId);
+    if (!w) return;
+
+    // Find original submission
+    const original = c.submissions?.[w.id]?.[adjustDraft.participant];
+    if (!original) {
+      showToast("warn", "Original submission not found.");
+      return;
+    }
+
+    updateComp(c.id, (draft) => {
+      draft.adjustments = draft.adjustments || [];
+      draft.adjustments.unshift({
+        id: adjustDraft.id,
+        workoutId: w.id,
+        workoutName: w.name,
+        participant: adjustDraft.participant,
+        division: participantMeta.get(adjustDraft.participant)?.division || "",
+        originalValue: original.value,
+        adjustedValue: n,
+        judgeName: judgeName || "Judge",
+        judgeNote: adjustDraft.note || "",
+        adjustedAt: new Date().toISOString(),
+        status: "awaiting_head_judge",
+      });
+
+      // mark submission as reviewed/needs_change if changed drastically? keep simple: if judge note requests changes, mark needs_change
+      draft.submissions = draft.submissions || {};
+      draft.submissions[w.id] = draft.submissions[w.id] || {};
+      draft.submissions[w.id][adjustDraft.participant] = {
+        ...draft.submissions[w.id][adjustDraft.participant],
+        status: "submitted",
+        judgeNote: adjustDraft.note || "",
+      };
+
+      return draft;
+    });
+
+    addAudit(`Judge adjusted ${adjustDraft.participant} on ${w.name}: ${original.value} -> ${n} (awaiting head judge)`);
+    showToast("ok", "Adjustment sent to Head Judge.");
+    setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" });
+  }
+
+  // ================================
+  // Head Judge confirm adjustments
+  // ================================
+  const [headJudgeView, setHeadJudgeView] = useState("confirm"); // confirm | leaderboard | audit
+  const [headJudgeName, setHeadJudgeName] = useState(() => currentComp?.headJudgePool?.[0] || "Head Judge");
+
+  useEffect(() => {
+    setHeadJudgeName(currentComp?.headJudgePool?.[0] || "Head Judge");
+  }, [data.ui.compId]);
+
+  const awaitingAdjustments = useMemo(() => {
+    const c = currentComp;
+    if (!c) return [];
+    return (c.adjustments || []).filter((a) => a.status === "awaiting_head_judge");
+  }, [currentComp]);
+
+  function confirmAdjustment(adjId) {
+    const c = currentComp;
+    if (!c) return;
+
+    const adj = (c.adjustments || []).find((x) => x.id === adjId);
+    if (!adj) return;
+
+    updateComp(c.id, (draft) => {
+      draft.finalScores = draft.finalScores || {};
+      draft.finalScores[adj.workoutId] = draft.finalScores[adj.workoutId] || {};
+      draft.finalScores[adj.workoutId][adj.participant] = {
+        value: adj.adjustedValue,
+        confirmedBy: headJudgeName || "Head Judge",
+        confirmedAt: new Date().toISOString(),
+        note: adj.judgeNote || "",
+      };
+
+      // mark adjustment confirmed
+      const item = (draft.adjustments || []).find((x) => x.id === adjId);
+      if (item) item.status = "confirmed";
+
+      return draft;
+    });
+
+    addAudit(`Head Judge confirmed adjustment for ${adj.participant} on ${adj.workoutName}: final=${adj.adjustedValue}`);
+    showToast("ok", "Confirmed -> Final score updated.");
+  }
+
+  function rejectAdjustment(adjId, reason) {
+    const c = currentComp;
+    if (!c) return;
+
+    const adj = (c.adjustments || []).find((x) => x.id === adjId);
+    if (!adj) return;
+
+    updateComp(c.id, (draft) => {
+      // mark adjustment rejected
+      const item = (draft.adjustments || []).find((x) => x.id === adjId);
+      if (item) {
+        item.status = "rejected";
+        item.headJudgeNote = reason || "Rejected";
+      }
+
+      // mark original submission needs_change so athlete can resubmit
+      draft.submissions = draft.submissions || {};
+      draft.submissions[adj.workoutId] = draft.submissions[adj.workoutId] || {};
+      const sub = draft.submissions[adj.workoutId][adj.participant];
+      if (sub) {
+        sub.status = "needs_change";
+        sub.judgeNote = reason || "Please resubmit / clarify score evidence.";
+      }
+
+      return draft;
+    });
+
+    addAudit(`Head Judge rejected adjustment for ${adj.participant} on ${adj.workoutName}: ${reason || "no note"}`);
+    showToast("ok", "Rejected (athlete marked needs change).");
+  }
+
+  // ================================
+  // Leaderboard (provisional vs final)
+  // ================================
   const leaderboard = useMemo(() => {
     const c = currentComp;
     if (!c) return [];
-    const totals = new Map();
-    const details = new Map(); // name -> per workout score/status
 
-    const finalOnly = data.settings.finalOnlyLeaderboard;
-    const requireApproval = data.settings.requireApproval;
+    // Determine what the viewer is allowed to see
+    const privileged = isStaff && staffCanSeeProvisional;
+    const showProvisional = !finalOnly || privileged;
 
-    const allowProvisional =
-      !finalOnly ||
-      (data.settings.allowProvisionalViewForJudges && (isJudge || isHeadJudge || isOrganiser));
+    // Build per workout effective score
+    const rows = new Map();
 
-    // For each workout, aggregate numeric value (simple sum demo)
-    c.workouts.forEach((w) => {
-      const scoreMap = c.scores?.[w.id] || {};
-      Object.entries(scoreMap).forEach(([name, s]) => {
-        // If requireApproval: include approved always; include pending only in provisional mode
-        const isApproved = s.status === "approved";
-        const isPending = s.status === "pending";
-        const isNeedsChange = s.status === "needs_change";
+    function add(name, division, workoutId, scoreObj, sourceLabel) {
+      if (!rows.has(name)) rows.set(name, { name, division, total: 0, per: {}, sources: {} });
+      const r = rows.get(name);
+      r.per[workoutId] = scoreObj;
+      r.sources[workoutId] = sourceLabel;
+      r.total += Number(scoreObj.value || 0);
+    }
 
-        let include = false;
-        if (!requireApproval) include = true;
-        else if (isApproved) include = true;
-        else if (isPending && allowProvisional) include = true;
-        else include = false;
+    // For each workout, choose:
+    // 1) finalScores if present
+    // 2) else if showProvisional: use latest awaiting adjustment (adjustedValue) if exists
+    // 3) else if showProvisional: use athlete submission value
+    for (const w of c.workouts || []) {
+      const finals = c.finalScores?.[w.id] || {};
 
-        // If finalOnlyLeaderboard is true, hide non-approved unless privileged and allowProvisional
-        if (finalOnly && !isApproved && !allowProvisional) include = false;
-
-        if (!include) {
-          // still record detail
-          const d = details.get(name) || {};
-          d[w.id] = { value: s.value, status: s.status, unit: w.unit };
-          details.set(name, d);
-          return;
-        }
-
-        const current = totals.get(name) || 0;
-        totals.set(name, current + Number(s.value));
-
-        const d = details.get(name) || {};
-        d[w.id] = { value: s.value, status: s.status, unit: w.unit };
-        details.set(name, d);
+      // index adjustments by participant (latest awaiting)
+      const awaiting = (c.adjustments || [])
+        .filter((a) => a.workoutId === w.id && a.status === "awaiting_head_judge")
+        .sort((a, b) => String(b.adjustedAt || "").localeCompare(String(a.adjustedAt || "")));
+      const awaitingBy = new Map();
+      awaiting.forEach((a) => {
+        if (!awaitingBy.has(a.participant)) awaitingBy.set(a.participant, a);
       });
+
+      const subs = c.submissions?.[w.id] || {};
+
+      // Participants depend on mode
+      const participants = mode === "athlete" ? (c.athletes || []).map((a) => a.name) : (c.teams || []).map((t) => t.name);
+
+      for (const p of participants) {
+        const div = participantMeta.get(p)?.division || "";
+        if (finals[p]) {
+          add(p, div, w.id, { value: finals[p].value, unit: w.unit, status: "FINAL" }, "final");
+        } else if (showProvisional && awaitingBy.get(p)) {
+          const a = awaitingBy.get(p);
+          add(p, div, w.id, { value: a.adjustedValue, unit: w.unit, status: "ADJUSTED (awaiting HJ)" }, "adjusted");
+        } else if (showProvisional && subs[p] && subs[p].status !== "withdrawn") {
+          add(p, div, w.id, { value: subs[p].value, unit: w.unit, status: subs[p].status }, "submission");
+        } else {
+          // no score
+        }
+      }
+    }
+
+    const arr = Array.from(rows.values());
+    arr.sort((a, b) => b.total - a.total);
+    return arr;
+  }, [currentComp, mode, participantMeta, isStaff, staffCanSeeProvisional, finalOnly]);
+
+  // ================================
+  // Organiser: workout builder & scheduling
+  // ================================
+  const [orgView, setOrgView] = useState("workouts"); // workouts | schedule | leaderboard_controls | audit
+  const [workoutEditor, setWorkoutEditor] = useState(null); // {mode, draft}
+
+  function openNewWorkout() {
+    setWorkoutEditor({
+      mode: "new",
+      draft: {
+        id: uid("w"),
+        name: "New Workout",
+        divisionNotes: "All divisions",
+        scoreType: "reps",
+        sort: "desc",
+        unit: "reps",
+        cap: "10:00",
+        tiebreak: "",
+        equipment: [],
+        standards: [],
+        description: "",
+        media: { demoVideoUrl: "", scorecardUrl: "" },
+        liveWindow: defaultWindow(1, 72),
+      },
+    });
+  }
+
+  function openEditWorkout(w) {
+    setWorkoutEditor({ mode: "edit", draft: JSON.parse(JSON.stringify(w)) });
+  }
+
+  function saveWorkout(draftWorkout) {
+    if (!draftWorkout.name?.trim()) return showToast("warn", "Workout name is required.");
+
+    updateComp(currentComp.id, (c) => {
+      c.workouts = c.workouts || [];
+      const idx = c.workouts.findIndex((x) => x.id === draftWorkout.id);
+      if (idx >= 0) c.workouts[idx] = draftWorkout;
+      else c.workouts.push(draftWorkout);
+      // Ensure submission buckets exist
+      c.submissions = c.submissions || {};
+      c.submissions[draftWorkout.id] = c.submissions[draftWorkout.id] || {};
+      c.finalScores = c.finalScores || {};
+      c.finalScores[draftWorkout.id] = c.finalScores[draftWorkout.id] || {};
+      return c;
     });
 
-    // Return entries sorted by total (descending by default)
-    const rows = Array.from(totals.entries()).map(([name, total]) => ({
-      name,
-      total,
-      division: participantMeta.get(name)?.division || "",
-      breakdown: details.get(name) || {},
-    }));
+    addAudit(`${workoutEditor.mode === "new" ? "Created" : "Updated"} workout: ${draftWorkout.name}`);
+    showToast("ok", "Workout saved.");
+    setWorkoutEditor(null);
+  }
 
-    rows.sort((a, b) => b.total - a.total);
-    return rows;
-  }, [
-    currentComp,
-    data.settings.finalOnlyLeaderboard,
-    data.settings.requireApproval,
-    data.settings.allowProvisionalViewForJudges,
-    isJudge,
-    isHeadJudge,
-    isOrganiser,
-    participantMeta,
-  ]);
+  function deleteWorkout(workoutId) {
+    updateComp(currentComp.id, (c) => {
+      c.workouts = (c.workouts || []).filter((w) => w.id !== workoutId);
+      if (c.submissions) delete c.submissions[workoutId];
+      if (c.finalScores) delete c.finalScores[workoutId];
+      c.adjustments = (c.adjustments || []).filter((a) => a.workoutId !== workoutId);
+      return c;
+    });
+    addAudit(`Deleted workout: ${workoutId}`);
+    showToast("ok", "Workout deleted.");
+  }
 
-  // Score entry UI state
-  const [scoreDraft, setScoreDraft] = useState({
-    workoutId: "",
-    participant: "",
-    value: "",
-    judgeName: "",
-    note: "",
-  });
+  // ================================
+  // UI: header & tabs
+  // ================================
+  const tab = data.ui.tab;
 
-  useEffect(() => {
-    // reset score form on comp change
-    const c = currentComp;
-    if (!c) return;
-    setScoreDraft((s) => ({
-      ...s,
-      workoutId: c.workouts?.[0]?.id || "",
-      participant: participants?.[0] || "",
-      judgeName: c.judgePool?.[0] || "",
-      value: "",
-      note: "",
-    }));
-    setCompViewSafe("overview");
-  }, [data.ui.compId]); // eslint-disable-line react-hooks/exhaustive-deps
+  function roleHomeTab() {
+    // Simple: keep all tabs available, but competition is primary
+    return tab;
+  }
 
-  /* ================================
-     RENDER HELPERS
-  ================================ */
   const Header = () => (
     <div style={S.headerRow}>
       <div>
-        <div style={S.title}>Throwdown Hub — Single‑File Demo</div>
+        <div style={S.title}>Throwdown Hub — Role‑based Demo</div>
         <div style={S.subTitle}>
-          Directory + Competition workflows, all in <code>src/App.jsx</code> (localStorage persisted)
+          Athletes submit → Judges adjust → Head Judge confirms → Organiser controls workouts + live windows (single file)
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={S.pill}>
           <strong>Role</strong>
-          <Select
-            value={data.role}
-            onChange={(v) => setRole(v)}
-            options={ROLES}
-            style={{ padding: "6px 8px", borderRadius: 999 }}
-          />
+          <Select value={data.role} onChange={setRole} options={ROLES} style={{ padding: "6px 8px", borderRadius: 999 }} />
         </div>
+
         <div style={S.pill}>
           <strong>Mode</strong>
           <Button variant="primary" onClick={toggleMode} style={{ padding: "6px 10px", borderRadius: 999 }}>
-            {data.mode === "athlete" ? "Athlete" : "Team"}
+            {mode === "athlete" ? "Athlete" : "Team"}
           </Button>
         </div>
 
+        <Field label="Competition" style={{ minWidth: 260 }}>
+          <Select value={data.ui.compId} onChange={setCompId} options={data.competitions.map((c) => c.id)} />
+        </Field>
+
         <Button onClick={exportAll}>Export All</Button>
-        <Button
-          onClick={() => fileInputRef.current?.click()}
-          variant="primary"
-          title="Import either full demo JSON or directory JSON"
-        >
+        <Button variant="primary" onClick={() => fileInputRef.current?.click()}>
           Import JSON
         </Button>
         <input
@@ -1034,6 +990,7 @@ export default function App() {
             e.target.value = "";
           }}
         />
+
         <Button variant="danger" onClick={resetDemo}>
           Reset Demo
         </Button>
@@ -1043,13 +1000,13 @@ export default function App() {
 
   const Tabs = () => (
     <div style={{ ...S.row, marginTop: 12 }}>
-      <Button variant={tab === "directory" ? "primary" : "default"} onClick={() => setTab("directory")}>
-        Events Directory
+      <Button variant={roleHomeTab() === "competition" ? "primary" : "default"} onClick={() => setTab("competition")}>
+        Competition
       </Button>
-      <Button variant={tab === "competition" ? "primary" : "default"} onClick={() => setTab("competition")}>
-        Competition Demo
+      <Button variant={roleHomeTab() === "directory" ? "primary" : "default"} onClick={() => setTab("directory")}>
+        Directory (lite)
       </Button>
-      <Button variant={tab === "admin" ? "primary" : "default"} onClick={() => setTab("admin")}>
+      <Button variant={roleHomeTab() === "admin" ? "primary" : "default"} onClick={() => setTab("admin")}>
         Settings / Admin
       </Button>
     </div>
@@ -1071,423 +1028,997 @@ export default function App() {
           zIndex: 1000,
         }}
       >
-        <div style={{ fontWeight: 800, fontSize: 12, letterSpacing: 0.2 }}>
-          {toast.type === "ok" ? "Done" : "Note"}
-        </div>
+        <div style={{ fontWeight: 900, fontSize: 12, letterSpacing: 0.2 }}>{toast.type === "ok" ? "Done" : "Note"}</div>
         <div style={{ marginTop: 4, fontSize: 13 }}>{toast.msg}</div>
       </div>
     ) : null;
 
   /* ================================
-     DIRECTORY UI
-  ================================ */
+     DIRECTORY (lite placeholder)
+================================ */
   const DirectoryPanel = () => {
-    const view = data.ui.directoryView;
-
-    const monthName = new Date(dirMonth.year, dirMonth.monthIndex, 1).toLocaleDateString("en-GB", {
-      month: "long",
-      year: "numeric",
-    });
-
-    const dayEvents = eventsByDate.get(selectedDate) || [];
-
+    const evt = data.directory.events?.[0];
     return (
       <div style={{ ...S.row, marginTop: 14 }}>
-        <div style={{ flex: "1 1 720px", ...S.card }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 850 }}>Events Directory</div>
-              <div style={S.muted}>Calendar + list + filters + CRUD + import/export (demo localStorage)</div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <Button variant={view === "calendar" ? "primary" : "default"} onClick={() => setDirectoryView("calendar")}>
-                Calendar
-              </Button>
-              <Button variant={view === "list" ? "primary" : "default"} onClick={() => setDirectoryView("list")}>
-                List
-              </Button>
-
-              <Button onClick={exportDirectory}>Export Directory</Button>
-
-              {canEditDirectory ? (
-                <Button variant="primary" onClick={openNewEvent}>
-                  + Add Event
-                </Button>
-              ) : (
-                <div style={{ ...S.pill, opacity: 0.9 }}>
-                  <strong>Editing:</strong> organiser only
-                </div>
-              )}
-            </div>
-          </div>
-
+        <div style={{ flex: "1 1 760px", ...S.card }}>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>Events Directory (lite)</div>
+          <div style={S.muted}>You can drop your full calendar/list directory back in here — this demo focuses on the qualifier workflow.</div>
           <div style={S.divider} />
-
-          {/* Filters */}
-          <div style={{ ...S.row, alignItems: "flex-end" }}>
-            <Field label="Search">
-              <input
-                style={{ ...S.input, width: 260 }}
-                value={dirFilters.q}
-                onChange={(e) => setDirFilters((f) => ({ ...f, q: e.target.value }))}
-                placeholder="Name, city, division, tag…"
-              />
-            </Field>
-
-            <Field label="Status">
-              <Select
-                value={dirFilters.status}
-                onChange={(v) => setDirFilters((f) => ({ ...f, status: v }))}
-                options={["all", "upcoming", "past", "cancelled"]}
-                style={{ width: 170 }}
-              />
-            </Field>
-
-            <Field label="Division">
-              <Select
-                value={dirFilters.division}
-                onChange={(v) => setDirFilters((f) => ({ ...f, division: v }))}
-                options={divisionsInDirectory}
-                style={{ width: 200 }}
-              />
-            </Field>
-
-            <Field label="Registration">
-              <Select
-                value={dirFilters.reg}
-                onChange={(v) => setDirFilters((f) => ({ ...f, reg: v }))}
-                options={["all", "open", "closed"]}
-                style={{ width: 160 }}
-              />
-            </Field>
-
-            <Button
-              onClick={() => setDirFilters({ q: "", status: "all", division: "all", reg: "all" })}
-              style={{ marginLeft: "auto" }}
-            >
-              Clear
-            </Button>
-          </div>
-
-          <div style={S.divider} />
-
-          {view === "calendar" ? (
-            <>
-              {/* Month controls */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <Button
-                    onClick={() =>
-                      setDirMonth((m) => {
-                        const nextMonth = m.monthIndex - 1;
-                        if (nextMonth < 0) return { year: m.year - 1, monthIndex: 11 };
-                        return { year: m.year, monthIndex: nextMonth };
-                      })
-                    }
-                  >
-                    ← Prev
-                  </Button>
-                  <div style={{ fontWeight: 900, fontSize: 16 }}>{monthName}</div>
-                  <Button
-                    onClick={() =>
-                      setDirMonth((m) => {
-                        const nextMonth = m.monthIndex + 1;
-                        if (nextMonth > 11) return { year: m.year + 1, monthIndex: 0 };
-                        return { year: m.year, monthIndex: nextMonth };
-                      })
-                    }
-                  >
-                    Next →
-                  </Button>
-                </div>
-
-                <div style={{ ...S.pill }}>
-                  <strong>Selected:</strong> {prettyDate(selectedDate)}
-                </div>
+          {evt ? (
+            <div style={S.card}>
+              <div style={{ fontWeight: 900, fontSize: 15 }}>{evt.name}</div>
+              <div style={S.muted}>
+                {prettyDate(evt.startDate)} → {prettyDate(evt.endDate)} • {evt.city} • {evt.venue}
               </div>
-
-              <div style={{ height: 10 }} />
-
-              {/* Calendar grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
-                  <div key={d} style={{ ...S.muted, fontWeight: 800, letterSpacing: 0.2, paddingLeft: 6 }}>
+              <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {(evt.divisions || []).map((d) => (
+                  <span key={d} style={S.tag}>
                     {d}
-                  </div>
+                  </span>
                 ))}
-                {monthGrid.map((cell, idx) => {
-                  if (!cell) return <div key={idx} style={{ height: 96, opacity: 0.25 }} />;
-                  const iso = yyyyMmDd(cell);
-                  const day = cell.getDate();
-                  const list = (eventsByDate.get(iso) || []).filter((e) => {
-                    // Apply filters to the day list too
-                    if (dirFilters.status !== "all" && e.status !== dirFilters.status) return false;
-                    if (dirFilters.reg !== "all") {
-                      const wantOpen = dirFilters.reg === "open";
-                      if (!!e.regOpen !== wantOpen) return false;
-                    }
-                    if (dirFilters.division !== "all") {
-                      if (!(e.divisions || []).includes(dirFilters.division)) return false;
-                    }
-                    const q = normaliseStr(dirFilters.q);
-                    if (q) {
-                      const blob = [
-                        e.name,
-                        e.city,
-                        e.venue,
-                        (e.divisions || []).join(" "),
-                        (e.tags || []).join(" "),
-                        e.notes,
-                      ]
-                        .join(" ")
-                        .toLowerCase();
-                      if (!blob.includes(q)) return false;
-                    }
-                    return true;
-                  });
-
-                  const isSelected = iso === selectedDate;
-                  const hasEvents = list.length > 0;
-
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => setSelectedDate(iso)}
-                      style={{
-                        height: 96,
-                        borderRadius: 12,
-                        border: isSelected
-                          ? "1px solid rgba(70,170,255,0.55)"
-                          : "1px solid rgba(255,255,255,0.10)",
-                        background: isSelected ? "rgba(70,170,255,0.12)" : "rgba(0,0,0,0.18)",
-                        padding: 10,
-                        cursor: "pointer",
-                        position: "relative",
-                        overflow: "hidden",
-                      }}
-                      title={hasEvents ? `${list.length} event(s)` : "No events"}
-                    >
-                      <div style={{ fontWeight: 900 }}>{day}</div>
-                      {hasEvents ? (
-                        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                          {list.slice(0, 2).map((e) => (
-                            <div key={e.id} style={{ fontSize: 12, opacity: 0.9, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              • {e.name}
-                            </div>
-                          ))}
-                          {list.length > 2 ? <div style={{ fontSize: 12, opacity: 0.7 }}>+{list.length - 2} more</div> : null}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 12, opacity: 0.45, marginTop: 6 }}>—</div>
-                      )}
-                      {hasEvents ? (
-                        <div
-                          style={{
-                            position: "absolute",
-                            right: 10,
-                            top: 10,
-                            width: 10,
-                            height: 10,
-                            borderRadius: 999,
-                            background: "rgba(70,170,255,0.8)",
-                            boxShadow: "0 0 0 4px rgba(70,170,255,0.12)",
-                          }}
-                        />
-                      ) : null}
-                    </div>
-                  );
-                })}
+                {(evt.tags || []).map((t) => (
+                  <span key={t} style={{ ...S.tag, opacity: 0.85 }}>
+                    #{t}
+                  </span>
+                ))}
               </div>
-
-              <div style={S.divider} />
-
-              {/* Selected day detail */}
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 900 }}>Events on {prettyDate(selectedDate)}</div>
-                  <div style={S.muted}>Filtered view (matches the filters above)</div>
+              {evt.instagram ? (
+                <div style={{ marginTop: 8, ...S.muted }}>
+                  IG: <strong>{evt.instagram}</strong>
                 </div>
-                <div style={S.muted}>{dayEvents.length} total event(s) on this date (unfiltered)</div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-                {(eventsByDate.get(selectedDate) || [])
-                  .filter((e) => filteredDirectoryEvents.some((x) => x.id === e.id))
-                  .map((e) => (
-                    <DirectoryEventCard
-                      key={e.id}
-                      evt={e}
-                      editable={canEditDirectory}
-                      onEdit={() => openEditEvent(e)}
-                      onDelete={() => {
-                        if (window.confirm(`Delete "${e.name}"?`)) {
-                          deleteEvent(e.id);
-                          showToast("ok", "Event deleted.");
-                        }
-                      }}
-                    />
-                  ))}
-                {(eventsByDate.get(selectedDate) || []).filter((e) => filteredDirectoryEvents.some((x) => x.id === e.id)).length === 0 ? (
-                  <div style={{ ...S.card, opacity: 0.9 }}>
-                    <div style={{ fontWeight: 900 }}>No events match your filters on this day.</div>
-                    <div style={{ ...S.muted, marginTop: 6 }}>Try clearing filters or switching to List view.</div>
-                  </div>
-                ) : null}
-              </div>
-            </>
+              ) : null}
+            </div>
           ) : (
-            <>
-              {/* List view */}
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 900 }}>Events List</div>
-                <div style={S.muted}>{filteredDirectoryEvents.length} event(s) matching filters</div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-                {filteredDirectoryEvents.map((e) => (
-                  <DirectoryEventCard
-                    key={e.id}
-                    evt={e}
-                    editable={canEditDirectory}
-                    onEdit={() => openEditEvent(e)}
-                    onDelete={() => {
-                      if (window.confirm(`Delete "${e.name}"?`)) {
-                        deleteEvent(e.id);
-                        showToast("ok", "Event deleted.");
-                      }
-                    }}
-                  />
-                ))}
-              </div>
-            </>
+            <div style={S.muted}>No events in directory.</div>
           )}
         </div>
-
-        {/* Right sidebar — quick help */}
-        <div style={{ flex: "0 0 360px", ...S.card, alignSelf: "flex-start" }}>
-          <div style={{ fontSize: 16, fontWeight: 900 }}>Directory Notes</div>
-          <div style={{ height: 10 }} />
-          <div style={S.muted}>
-            This demo stores directory data in <strong>localStorage</strong>.
-            <br />
-            <br />
-            <strong>Organiser</strong> role can add/edit/delete events.
-            <br />
-            Export directory JSON now, then later you can import it into a backend pipeline.
-          </div>
-
-          <div style={S.divider} />
-
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Quick actions</div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Button onClick={exportDirectory}>Export Directory</Button>
-            {canEditDirectory ? (
-              <Button variant="primary" onClick={openNewEvent}>
-                + Add Event
-              </Button>
-            ) : (
-              <Button onClick={() => setRole("organiser")}>Switch to organiser</Button>
-            )}
-          </div>
-
-          <div style={S.divider} />
-
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Tip</div>
-          <div style={S.muted}>
-            When you connect a real DB later, keep the UI structure the same — just replace the storage layer with API calls.
-          </div>
-        </div>
-
-        {/* Modal */}
-        {eventEditor ? (
-          <EventEditorModal
-            editor={eventEditor}
-            onClose={closeEventEditor}
-            onSave={(evt) => {
-              // Basic validation
-              if (!evt.name.trim()) return showToast("warn", "Event name is required.");
-              if (!evt.startDate) return showToast("warn", "Start date is required.");
-              if (!evt.endDate) evt.endDate = evt.startDate;
-              upsertEvent(evt);
-              showToast("ok", eventEditor.mode === "new" ? "Event added." : "Event updated.");
-            }}
-          />
-        ) : null}
       </div>
     );
   };
 
-  function DirectoryEventCard({ evt, editable, onEdit, onDelete }) {
+  /* ================================
+     COMPETITION: role-specific shells
+================================ */
+  const CompetitionPanel = () => {
+    if (!currentComp) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
+
     return (
-      <div style={{ ...S.card, padding: 12 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 950, fontSize: 15, lineHeight: 1.2 }}>{evt.name}</div>
-            <div style={{ ...S.muted, marginTop: 4 }}>
-              {prettyDate(evt.startDate)}
-              {evt.endDate && evt.endDate !== evt.startDate ? ` → ${prettyDate(evt.endDate)}` : ""} •{" "}
-              {evt.city}
-              {evt.venue ? ` • ${evt.venue}` : ""}
+      <div style={{ ...S.row, marginTop: 14 }}>
+        <div style={{ flex: "1 1 760px", ...S.card }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>{currentComp.name}</div>
+              <div style={S.muted}>
+                {prettyDate(currentComp.date)} • {currentComp.location} • {currentComp.description}
+              </div>
+            </div>
+            <div style={S.pill}>
+              <strong>Role view:</strong> {role}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <span style={S.tag}>{evt.status}</span>
-            <span style={S.tag}>{evt.regOpen ? "reg open" : "reg closed"}</span>
+
+          <div style={S.divider} />
+
+          {role === "spectator" ? <SpectatorView /> : null}
+          {isAthleteSide ? <AthleteTeamView /> : null}
+          {isJudge ? <JudgeView /> : null}
+          {isHeadJudge ? <HeadJudgeView /> : null}
+          {isOrganiser ? <OrganiserView /> : null}
+        </div>
+
+        <div style={{ flex: "0 0 360px", ...S.card, alignSelf: "flex-start" }}>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>Competition Status</div>
+          <div style={S.divider} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={S.pill}>
+              <strong>Submissions</strong> {submissionsClosed ? "Closed" : "Open"}
+            </div>
+            <div style={S.pill}>
+              <strong>Leaderboard</strong> {leaderboardHidden ? "Hidden" : finalOnly ? "Final-only" : "Provisional"}
+            </div>
+            <div style={S.pill}>
+              <strong>Now</strong> {prettyDateTime(new Date().toISOString())}
+            </div>
+          </div>
+
+          <div style={S.divider} />
+
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Workouts (live windows)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(currentComp.workouts || []).map((w) => (
+              <div key={w.id} style={{ ...S.card, padding: 10 }}>
+                <div style={{ fontWeight: 900 }}>{w.name}</div>
+                <div style={S.muted}>{workoutLiveLabel(w)}</div>
+                <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <span style={S.tag}>{w.scoreType}</span>
+                  <span style={S.tag}>{w.cap}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  /* ================================
+     ROLE: Spectator
+================================ */
+  function SpectatorView() {
+    return (
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 900 }}>Spectator</div>
+        <div style={{ ...S.muted, marginTop: 6 }}>
+          You can view workouts and the leaderboard (if enabled). Switch role to Athlete/Team Manager to submit.
+        </div>
+
+        <div style={S.divider} />
+
+        <WorkoutsList readOnly />
+        <div style={S.divider} />
+        <LeaderboardPanel />
+      </div>
+    );
+  }
+
+  /* ================================
+     ROLE: Athlete / Team Manager
+================================ */
+  function AthleteTeamView() {
+    const mySubs = useMemo(() => {
+      const c = currentComp;
+      if (!c) return [];
+      const rows = [];
+      for (const w of c.workouts || []) {
+        const s = c.submissions?.[w.id]?.[mySelection];
+        if (s) rows.push({ workoutId: w.id, workoutName: w.name, ...s });
+      }
+      return rows;
+    }, [currentComp, mySelection]);
+
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Button variant={athleteView === "workouts" ? "primary" : "default"} onClick={() => setAthleteView("workouts")}>
+            Workouts
+          </Button>
+          <Button variant={athleteView === "submit" ? "primary" : "default"} onClick={() => setAthleteView("submit")}>
+            Submit Score
+          </Button>
+          <Button variant={athleteView === "my_submissions" ? "primary" : "default"} onClick={() => setAthleteView("my_submissions")}>
+            My Submissions
+          </Button>
+          <Button variant={athleteView === "leaderboard" ? "primary" : "default"} onClick={() => setAthleteView("leaderboard")}>
+            Leaderboard
+          </Button>
+
+          <div style={{ marginLeft: "auto", minWidth: 280 }}>
+            <Field label={mode === "athlete" ? "Athlete" : "Team"}>
+              <Select value={mySelection} onChange={setMySelection} options={participantList.length ? participantList : ["—"]} />
+            </Field>
           </div>
         </div>
 
-        <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {(evt.divisions || []).slice(0, 6).map((d) => (
-            <span key={d} style={S.tag}>
-              {d}
-            </span>
-          ))}
-          {(evt.tags || []).slice(0, 6).map((t) => (
-            <span key={t} style={{ ...S.tag, opacity: 0.85 }}>
-              #{t}
-            </span>
-          ))}
+        <div style={S.divider} />
+
+        {athleteView === "workouts" ? <WorkoutsList /> : null}
+        {athleteView === "submit" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Submit an online score</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>
+              You can only submit while the workout is LIVE and submissions are open.
+            </div>
+
+            <div style={S.divider} />
+
+            <div style={{ ...S.card, padding: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                <Field label="Workout">
+                  <Select
+                    value={submitDraft.workoutId}
+                    onChange={(v) => setSubmitDraft((d) => ({ ...d, workoutId: v }))}
+                    options={(currentComp.workouts || []).map((w) => w.id)}
+                  />
+                </Field>
+
+                <Field label="Score (number)">
+                  <input
+                    style={S.input}
+                    value={submitDraft.value}
+                    onChange={(e) => setSubmitDraft((d) => ({ ...d, value: e.target.value }))}
+                    placeholder="e.g. 542"
+                  />
+                </Field>
+
+                <Field label="Video URL (optional)">
+                  <input
+                    style={S.input}
+                    value={submitDraft.videoUrl}
+                    onChange={(e) => setSubmitDraft((d) => ({ ...d, videoUrl: e.target.value }))}
+                    placeholder="https://..."
+                  />
+                </Field>
+
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <Field label="Notes (optional)">
+                    <input
+                      style={S.input}
+                      value={submitDraft.notes}
+                      onChange={(e) => setSubmitDraft((d) => ({ ...d, notes: e.target.value }))}
+                      placeholder="Anything the judge should know…"
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <div style={{ height: 12 }} />
+
+              <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap", alignItems: "center" }}>
+                <div style={S.muted}>
+                  Workout status:{" "}
+                  <strong>
+                    {(() => {
+                      const w = currentComp.workouts.find((x) => x.id === submitDraft.workoutId);
+                      return w ? workoutLiveLabel(w) : "—";
+                    })()}
+                  </strong>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Button
+                    variant="primary"
+                    onClick={submitOnlineScore}
+                    disabled={!mySelection || !submitDraft.workoutId}
+                    title={submissionsClosed ? "Submissions are closed by organiser" : ""}
+                  >
+                    Submit
+                  </Button>
+                  <Button
+                    onClick={() => setSubmitDraft((d) => ({ ...d, value: String(Math.floor(Math.random() * 300) + 1) }))}
+                  >
+                    Random demo score
+                  </Button>
+                </div>
+              </div>
+
+              {submissionsClosed ? (
+                <div style={{ ...S.muted, marginTop: 10 }}>
+                  Submissions are currently <strong>closed</strong> by the organiser.
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {athleteView === "my_submissions" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>My submissions ({mySelection || "—"})</div>
+            <div style={S.divider} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
+              {mySubs.map((s) => (
+                <div key={s.workoutId} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>{s.workoutName}</div>
+                  <div style={S.muted}>
+                    Submitted: {prettyDateTime(s.submittedAt)} • Status: <strong>{s.status}</strong>
+                  </div>
+                  <div style={{ height: 8 }} />
+                  <div style={{ fontWeight: 900 }}>Score: {s.value}</div>
+                  {s.videoUrl ? (
+                    <div style={{ ...S.muted, marginTop: 6 }}>
+                      Video: <a href={s.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#9fd2ff" }}>Open</a>
+                    </div>
+                  ) : null}
+                  {s.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: “{s.judgeNote}”</div> : null}
+                  {s.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Your note: “{s.notes}”</div> : null}
+                </div>
+              ))}
+              {mySubs.length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No submissions yet.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Go to “Submit Score” to add your first entry.</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {athleteView === "leaderboard" ? <LeaderboardPanel /> : null}
+      </div>
+    );
+  }
+
+  /* ================================
+     ROLE: Judge
+================================ */
+  function JudgeView() {
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Button variant={judgeView === "review" ? "primary" : "default"} onClick={() => setJudgeView("review")}>
+            Review Submissions
+          </Button>
+          <Button variant={judgeView === "adjusted_queue" ? "primary" : "default"} onClick={() => setJudgeView("adjusted_queue")}>
+            Adjustments Sent
+          </Button>
+          <Button variant={judgeView === "leaderboard" ? "primary" : "default"} onClick={() => setJudgeView("leaderboard")}>
+            Leaderboard
+          </Button>
+
+          <div style={{ marginLeft: "auto", minWidth: 260 }}>
+            <Field label="Judge identity (demo)">
+              <Select value={judgeName} onChange={setJudgeName} options={currentComp.judgePool || ["Judge"]} />
+            </Field>
+          </div>
         </div>
 
-        {evt.notes ? <div style={{ ...S.muted, marginTop: 10 }}>{evt.notes}</div> : null}
+        <div style={S.divider} />
 
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {evt.website ? (
-              <a href={evt.website} target="_blank" rel="noreferrer" style={{ color: "#bfe3ff", fontSize: 13 }}>
-                Website
-              </a>
-            ) : null}
-            {evt.instagram ? (
-              <span style={{ ...S.muted, fontSize: 13 }}>
-                IG: <strong>{evt.instagram}</strong>
-              </span>
+        {judgeView === "review" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Submission review</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>
+              Select a submission → adjust score → it goes to Head Judge to confirm.
+            </div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <Field label="Search">
+                <input
+                  style={{ ...S.input, width: 260 }}
+                  value={judgeFilter.q}
+                  onChange={(e) => setJudgeFilter((f) => ({ ...f, q: e.target.value }))}
+                  placeholder="participant, workout…"
+                />
+              </Field>
+              <Field label="Workout">
+                <Select
+                  value={judgeFilter.workoutId}
+                  onChange={(v) => setJudgeFilter((f) => ({ ...f, workoutId: v }))}
+                  options={["all", ...(currentComp.workouts || []).map((w) => w.id)}
+                  style={{ width: 240 }}
+                />
+              </Field>
+              <Field label="Status">
+                <Select
+                  value={judgeFilter.status}
+                  onChange={(v) => setJudgeFilter((f) => ({ ...f, status: v }))}
+                  options={["all", "submitted", "needs_change"]}
+                  style={{ width: 200 }}
+                />
+              </Field>
+              <Button onClick={() => setJudgeFilter({ q: "", workoutId: "all", status: "submitted" })} style={{ marginLeft: "auto" }}>
+                Clear
+              </Button>
+            </div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+              {judgeFiltered.map((r) => (
+                <div key={`${r.workoutId}_${r.participant}`} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>{r.participant}</div>
+                      <div style={S.muted}>
+                        {r.workoutName} • {r.division || "—"} • {prettyDateTime(r.submittedAt)}
+                      </div>
+                    </div>
+                    <span style={S.tag}>{r.status}</span>
+                  </div>
+
+                  <div style={{ height: 8 }} />
+                  <div style={{ fontWeight: 900 }}>Submitted score: {r.value}</div>
+                  {r.videoUrl ? (
+                    <div style={{ ...S.muted, marginTop: 6 }}>
+                      Video: <a href={r.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#9fd2ff" }}>Open</a>
+                    </div>
+                  ) : null}
+                  {r.notes ? <div style={{ ...S.muted, marginTop: 6 }}>Athlete note: “{r.notes}”</div> : null}
+                  {r.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Previous judge note: “{r.judgeNote}”</div> : null}
+
+                  <div style={S.divider} />
+
+                  <Button variant="primary" onClick={() => startAdjust(r)}>
+                    Adjust / Confirm for Head Judge
+                  </Button>
+                </div>
+              ))}
+
+              {judgeFiltered.length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No submissions match your filters.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Athlete role and submit some demo scores to populate this list.</div>
+                </div>
+              ) : null}
+            </div>
+
+            {adjustDraft.workoutId ? (
+              <div style={{ ...S.card, marginTop: 12, padding: 12 }}>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>Adjust score</div>
+                <div style={S.muted}>
+                  Participant: <strong>{adjustDraft.participant}</strong> • Workout:{" "}
+                  <strong>{currentComp.workouts.find((w) => w.id === adjustDraft.workoutId)?.name || adjustDraft.workoutId}</strong>
+                </div>
+
+                <div style={{ height: 10 }} />
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  <Field label="Adjusted value (number)">
+                    <input
+                      style={S.input}
+                      value={adjustDraft.adjustedValue}
+                      onChange={(e) => setAdjustDraft((d) => ({ ...d, adjustedValue: e.target.value }))}
+                      placeholder="e.g. 512"
+                    />
+                  </Field>
+                  <Field label="Judge note (optional)">
+                    <input
+                      style={S.input}
+                      value={adjustDraft.note}
+                      onChange={(e) => setAdjustDraft((d) => ({ ...d, note: e.target.value }))}
+                      placeholder="e.g. 2 no-reps on box jumps"
+                    />
+                  </Field>
+                </div>
+
+                <div style={{ height: 10 }} />
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <Button onClick={() => setAdjustDraft({ id: "", workoutId: "", participant: "", adjustedValue: "", note: "" })}>
+                    Cancel
+                  </Button>
+                  <Button variant="primary" onClick={saveAdjustment}>
+                    Send to Head Judge
+                  </Button>
+                </div>
+              </div>
             ) : null}
           </div>
+        ) : null}
 
-          {editable ? (
-            <div style={{ display: "flex", gap: 8 }}>
-              <SmallButton onClick={onEdit}>Edit</SmallButton>
-              <SmallButton onClick={onDelete} style={{ borderColor: "rgba(255,110,110,0.35)" }}>
-                Delete
-              </SmallButton>
+        {judgeView === "adjusted_queue" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Adjustments you’ve sent</div>
+            <div style={S.divider} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+              {(currentComp.adjustments || []).filter((a) => a.judgeName === judgeName).map((a) => (
+                <div key={a.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>{a.participant}</div>
+                      <div style={S.muted}>{a.workoutName} • {prettyDateTime(a.adjustedAt)}</div>
+                    </div>
+                    <span style={S.tag}>{a.status}</span>
+                  </div>
+                  <div style={{ height: 8 }} />
+                  <div style={{ fontWeight: 900 }}>Original: {a.originalValue} → Adjusted: {a.adjustedValue}</div>
+                  {a.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Note: “{a.judgeNote}”</div> : null}
+                  {a.headJudgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>HJ note: “{a.headJudgeNote}”</div> : null}
+                </div>
+              ))}
+              {(currentComp.adjustments || []).filter((a) => a.judgeName === judgeName).length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No adjustments sent yet.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Go to “Review Submissions” and adjust a score.</div>
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
+        ) : null}
+
+        {judgeView === "leaderboard" ? <LeaderboardPanel /> : null}
+      </div>
+    );
+  }
+
+  /* ================================
+     ROLE: Head Judge
+================================ */
+  function HeadJudgeView() {
+    const [rejectNote, setRejectNote] = useState("");
+
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Button variant={headJudgeView === "confirm" ? "primary" : "default"} onClick={() => setHeadJudgeView("confirm")}>
+            Confirm Adjustments
+          </Button>
+          <Button variant={headJudgeView === "leaderboard" ? "primary" : "default"} onClick={() => setHeadJudgeView("leaderboard")}>
+            Leaderboard
+          </Button>
+          <Button variant={headJudgeView === "audit" ? "primary" : "default"} onClick={() => setHeadJudgeView("audit")}>
+            Audit
+          </Button>
+
+          <div style={{ marginLeft: "auto", minWidth: 260 }}>
+            <Field label="Head Judge identity (demo)">
+              <Select value={headJudgeName} onChange={setHeadJudgeName} options={currentComp.headJudgePool || ["Head Judge"]} />
+            </Field>
+          </div>
+        </div>
+
+        <div style={S.divider} />
+
+        {headJudgeView === "confirm" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Adjusted scores awaiting confirmation</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>
+              Confirmed adjustments become FINAL scores. Rejected ones mark the submission as “needs_change”.
+            </div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+              {awaitingAdjustments.map((a) => (
+                <div key={a.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>{a.participant}</div>
+                      <div style={S.muted}>
+                        {a.workoutName} • Judge: <strong>{a.judgeName}</strong> • {prettyDateTime(a.adjustedAt)}
+                      </div>
+                    </div>
+                    <span style={S.tag}>awaiting</span>
+                  </div>
+
+                  <div style={{ height: 8 }} />
+                  <div style={{ fontWeight: 900 }}>Original: {a.originalValue} → Adjusted: {a.adjustedValue}</div>
+                  {a.judgeNote ? <div style={{ ...S.muted, marginTop: 6 }}>Judge note: “{a.judgeNote}”</div> : null}
+
+                  <div style={S.divider} />
+
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <Button variant="primary" onClick={() => confirmAdjustment(a.id)}>
+                      Confirm -> Final
+                    </Button>
+                    <Button variant="danger" onClick={() => rejectAdjustment(a.id, rejectNote || "Rejected — please resubmit with clearer evidence.")}>
+                      Reject
+                    </Button>
+                  </div>
+
+                  <div style={{ height: 10 }} />
+                  <Field label="Reject note (applies to Reject button)">
+                    <input
+                      style={S.input}
+                      value={rejectNote}
+                      onChange={(e) => setRejectNote(e.target.value)}
+                      placeholder="e.g. Video angle unclear; resubmit…"
+                    />
+                  </Field>
+                </div>
+              ))}
+
+              {awaitingAdjustments.length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No adjustments awaiting confirmation.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Switch to Judge role and adjust a submission to populate this list.</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {headJudgeView === "leaderboard" ? <LeaderboardPanel /> : null}
+
+        {headJudgeView === "audit" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
+            <div style={S.divider} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {(currentComp.audit || []).map((a) => (
+                <div key={a.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 900 }}>{a.message}</div>
+                    <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
+                  </div>
+                </div>
+              ))}
+              {(currentComp.audit || []).length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Submit/adjust/confirm scores to generate audit.</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  /* ================================
+     ROLE: Organiser
+================================ */
+  function OrganiserView() {
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Button variant={orgView === "workouts" ? "primary" : "default"} onClick={() => setOrgView("workouts")}>
+            Workouts
+          </Button>
+          <Button variant={orgView === "schedule" ? "primary" : "default"} onClick={() => setOrgView("schedule")}>
+            Scheduling
+          </Button>
+          <Button variant={orgView === "leaderboard_controls" ? "primary" : "default"} onClick={() => setOrgView("leaderboard_controls")}>
+            Controls
+          </Button>
+          <Button variant={orgView === "audit" ? "primary" : "default"} onClick={() => setOrgView("audit")}>
+            Audit
+          </Button>
+
+          <div style={{ marginLeft: "auto" }}>
+            <Button variant="primary" onClick={openNewWorkout}>+ Add workout</Button>
+          </div>
+        </div>
+
+        <div style={S.divider} />
+
+        {orgView === "workouts" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout builder</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Edit workout details (standards/equipment/description) and scoring rules.</div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+              {(currentComp.workouts || []).map((w) => (
+                <div key={w.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>{w.name}</div>
+                      <div style={S.muted}>{w.scoreType} • cap {w.cap} • {workoutLiveLabel(w)}</div>
+                    </div>
+                    <span style={S.tag}>{w.id}</span>
+                  </div>
+
+                  <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <span style={S.tag}>sort: {w.sort}</span>
+                    <span style={S.tag}>unit: {w.unit}</span>
+                  </div>
+
+                  <div style={S.divider} />
+
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <Button variant="primary" onClick={() => openEditWorkout(w)}>Edit</Button>
+                    <Button
+                      variant="danger"
+                      onClick={() => {
+                        if (window.confirm(`Delete workout "${w.name}"?`)) deleteWorkout(w.id);
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {workoutEditor ? (
+              <WorkoutEditorModal
+                editor={workoutEditor}
+                onClose={() => setWorkoutEditor(null)}
+                onSave={saveWorkout}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
+        {orgView === "schedule" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Workout live windows</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Set open/close date-times (uses browser local time). Athletes can only submit while LIVE.</div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+              {(currentComp.workouts || []).map((w) => (
+                <div key={w.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>{w.name}</div>
+                  <div style={S.muted}>{workoutLiveLabel(w)}</div>
+
+                  <div style={{ height: 10 }} />
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Open at">
+                      <input
+                        style={S.input}
+                        type="datetime-local"
+                        value={isoToLocalInput(w.liveWindow?.openAt)}
+                        onChange={(e) => {
+                          const openIso = localInputToIso(e.target.value);
+                          updateComp(currentComp.id, (c) => {
+                            const ww = c.workouts.find((x) => x.id === w.id);
+                            ww.liveWindow = ww.liveWindow || {};
+                            ww.liveWindow.openAt = openIso;
+                            return c;
+                          });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Close at">
+                      <input
+                        style={S.input}
+                        type="datetime-local"
+                        value={isoToLocalInput(w.liveWindow?.closeAt)}
+                        onChange={(e) => {
+                          const closeIso = localInputToIso(e.target.value);
+                          updateComp(currentComp.id, (c) => {
+                            const ww = c.workouts.find((x) => x.id === w.id);
+                            ww.liveWindow = ww.liveWindow || {};
+                            ww.liveWindow.closeAt = closeIso;
+                            return c;
+                          });
+                        }}
+                      />
+                    </Field>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {orgView === "leaderboard_controls" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Controls</div>
+            <div style={{ ...S.muted, marginTop: 6 }}>Hide leaderboard, close submissions, choose final-only visibility.</div>
+
+            <div style={S.divider} />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+              <div style={{ ...S.card, padding: 12 }}>
+                <Toggle
+                  checked={data.settings.hideLeaderboard}
+                  onChange={() => toggleSetting("hideLeaderboard")}
+                  label="Hide leaderboard"
+                  hint="Athletes & spectators won’t see the leaderboard at all."
+                />
+                <div style={{ height: 10 }} />
+                <Toggle
+                  checked={data.settings.submissionsClosed}
+                  onChange={() => toggleSetting("submissionsClosed")}
+                  label="Close submissions"
+                  hint="Blocks athlete/team online score submissions."
+                />
+                <div style={{ height: 10 }} />
+                <Toggle
+                  checked={data.settings.finalOnlyLeaderboard}
+                  onChange={() => toggleSetting("finalOnlyLeaderboard")}
+                  label="Final-only leaderboard"
+                  hint="Non-staff see only FINAL confirmed scores."
+                />
+                <div style={{ height: 10 }} />
+                <Toggle
+                  checked={data.settings.allowProvisionalForStaff}
+                  onChange={() => toggleSetting("allowProvisionalForStaff")}
+                  label="Allow provisional for staff"
+                  hint="Judges/Head Judge/Organiser can still see provisional when final-only is ON."
+                />
+              </div>
+
+              <div style={{ ...S.card, padding: 12 }}>
+                <div style={{ fontWeight: 900 }}>Quick demo actions</div>
+                <div style={{ ...S.muted, marginTop: 6 }}>Use these to populate data fast for screenshots.</div>
+                <div style={{ height: 10 }} />
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    // Create random submissions for all participants for workout 1
+                    const w = currentComp.workouts?.[0];
+                    if (!w) return;
+                    updateComp(currentComp.id, (c) => {
+                      c.submissions = c.submissions || {};
+                      c.submissions[w.id] = c.submissions[w.id] || {};
+                      const participants = mode === "athlete" ? (c.athletes || []).map((a) => a.name) : (c.teams || []).map((t) => t.name);
+                      participants.forEach((p) => {
+                        c.submissions[w.id][p] = {
+                          value: Math.floor(Math.random() * 300) + 1,
+                          videoUrl: "",
+                          notes: "Auto-generated demo submission",
+                          submittedAt: new Date().toISOString(),
+                          status: "submitted",
+                          judgeNote: "",
+                        };
+                      });
+                      return c;
+                    });
+                    addAudit(`Organiser generated random demo submissions for ${currentComp.workouts?.[0]?.name}`);
+                    showToast("ok", "Random submissions generated for workout 1.");
+                  }}
+                >
+                  Generate submissions (workout 1)
+                </Button>
+                <div style={{ height: 10 }} />
+                <Button
+                  onClick={() => {
+                    // Clear all submissions/adjustments/finals
+                    updateComp(currentComp.id, (c) => {
+                      c.submissions = {};
+                      c.adjustments = [];
+                      c.finalScores = {};
+                      return c;
+                    });
+                    addAudit("Organiser cleared all submissions/adjustments/final scores");
+                    showToast("ok", "Cleared all qualifier scoring data.");
+                  }}
+                >
+                  Clear qualifier data
+                </Button>
+              </div>
+            </div>
+
+            <div style={S.divider} />
+
+            <LeaderboardPanel />
+          </div>
+        ) : null}
+
+        {orgView === "audit" ? (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 900 }}>Audit log</div>
+            <div style={S.divider} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {(currentComp.audit || []).map((a) => (
+                <div key={a.id} style={{ ...S.card, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 900 }}>{a.message}</div>
+                    <div style={S.muted}>{prettyDateTime(a.at)} • {a.whoRole}</div>
+                  </div>
+                </div>
+              ))}
+              {(currentComp.audit || []).length === 0 ? (
+                <div style={{ ...S.card, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>No audit entries yet.</div>
+                  <div style={{ ...S.muted, marginTop: 6 }}>Create/edit workouts and process scores to generate audit.</div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  /* ================================
+     Common panels
+================================ */
+  function WorkoutsList({ readOnly = false }) {
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+        {(currentComp.workouts || []).map((w) => (
+          <div key={w.id} style={{ ...S.card, padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>{w.name}</div>
+                <div style={S.muted}>
+                  {w.scoreType} • cap {w.cap} • <strong>{workoutLiveLabel(w)}</strong>
+                </div>
+              </div>
+              <span style={S.tag}>{w.unit}</span>
+            </div>
+
+            <div style={{ height: 10 }} />
+            <div style={{ fontWeight: 900 }}>Description</div>
+            <div style={{ ...S.muted, marginTop: 4 }}>{w.description || "—"}</div>
+
+            <div style={{ height: 10 }} />
+            <div style={{ fontWeight: 900 }}>Standards</div>
+            <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18, opacity: 0.92 }}>
+              {(w.standards || []).slice(0, 6).map((s, i) => (
+                <li key={i} style={{ fontSize: 13, marginBottom: 4 }}>{s}</li>
+              ))}
+              {(w.standards || []).length === 0 ? <li style={{ fontSize: 13, opacity: 0.7 }}>—</li> : null}
+            </ul>
+
+            <div style={{ height: 10 }} />
+            <div style={{ fontWeight: 900 }}>Equipment</div>
+            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(w.equipment || []).slice(0, 10).map((e) => (
+                <span key={e} style={S.tag}>{e}</span>
+              ))}
+              {(w.equipment || []).length === 0 ? <span style={S.tag}>—</span> : null}
+            </div>
+
+            <div style={S.divider} />
+            <div style={S.muted}>
+              Opens: <strong>{prettyDateTime(w.liveWindow?.openAt)}</strong><br />
+              Closes: <strong>{prettyDateTime(w.liveWindow?.closeAt)}</strong><br />
+              Tiebreak: <strong>{w.tiebreak || "—"}</strong>
+            </div>
+
+            {!readOnly && isAthleteSide ? (
+              <div style={{ marginTop: 10, ...S.muted }}>
+                Tip: go to <strong>Submit Score</strong> to enter your result.
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function LeaderboardPanel() {
+    if (leaderboardHidden) {
+      return (
+        <div style={{ ...S.card, padding: 12 }}>
+          <div style={{ fontWeight: 900 }}>Leaderboard hidden</div>
+          <div style={{ ...S.muted, marginTop: 6 }}>The organiser has hidden the leaderboard for this competition.</div>
+        </div>
+      );
+    }
+
+    const privileged = isStaff && staffCanSeeProvisional;
+    const showProvisional = !finalOnly || privileged;
+
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 15, fontWeight: 900 }}>Leaderboard ({showProvisional ? "Provisional" : "Final-only"})</div>
+          <div style={S.muted}>
+            {finalOnly && !privileged ? "You are viewing FINAL confirmed scores only." : "Includes submissions/adjustments where applicable."}
+          </div>
+        </div>
+
+        <div style={S.divider} />
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Rank</th>
+                <th style={S.th}>{mode === "athlete" ? "Athlete" : "Team"}</th>
+                <th style={S.th}>Division</th>
+                <th style={S.th}>Total</th>
+                {(currentComp.workouts || []).map((w) => (
+                  <th key={w.id} style={S.th}>{w.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {leaderboard.map((r, idx) => (
+                <tr key={r.name}>
+                  <td style={S.td}><div style={{ fontWeight: 900 }}>{idx + 1}</div></td>
+                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.name}</div></td>
+                  <td style={S.td}>{r.division || "—"}</td>
+                  <td style={S.td}><div style={{ fontWeight: 900 }}>{r.total}</div></td>
+                  {(currentComp.workouts || []).map((w) => {
+                    const s = r.per[w.id];
+                    return (
+                      <td key={w.id} style={S.td}>
+                        {s ? (
+                          <>
+                            <div style={{ fontWeight: 900 }}>{s.value} {w.unit}</div>
+                            <div style={S.muted}>{s.status}</div>
+                          </>
+                        ) : (
+                          <div style={{ opacity: 0.45 }}>—</div>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {leaderboard.length === 0 ? (
+                <tr>
+                  <td style={S.td} colSpan={4 + (currentComp.workouts || []).length}>
+                    <div style={{ fontWeight: 900 }}>No leaderboard entries yet.</div>
+                    <div style={{ ...S.muted, marginTop: 6 }}>Submit some scores as an athlete/team to populate this.</div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
       </div>
     );
   }
 
-  function EventEditorModal({ editor, onClose, onSave }) {
+  function WorkoutEditorModal({ editor, onClose, onSave }) {
     const [draft, setDraft] = useState(editor.draft);
 
     const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
-    const setArrFromCsv = (k, csv) =>
+    const setCsv = (k, csv) =>
       set(
         k,
         csv
@@ -1512,79 +2043,60 @@ export default function App() {
           if (e.target === e.currentTarget) onClose();
         }}
       >
-        <div style={{ ...S.card, width: "min(820px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ ...S.card, width: "min(920px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontSize: 18, fontWeight: 950 }}>
-              {editor.mode === "new" ? "Add Event" : "Edit Event"}
-            </div>
-            <div style={S.muted}>Esc: click outside to close</div>
+            <div style={{ fontSize: 18, fontWeight: 950 }}>{editor.mode === "new" ? "Add Workout" : "Edit Workout"}</div>
+            <div style={S.muted}>Click outside to close</div>
           </div>
 
           <div style={S.divider} />
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-            <Field label="Event name">
-              <input style={S.input} value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. South Coast Showdown" />
+            <Field label="Name">
+              <input style={S.input} value={draft.name} onChange={(e) => set("name", e.target.value)} />
             </Field>
 
-            <Field label="Status">
-              <Select value={draft.status} onChange={(v) => set("status", v)} options={["upcoming", "past", "cancelled"]} />
+            <Field label="Division notes">
+              <input style={S.input} value={draft.divisionNotes} onChange={(e) => set("divisionNotes", e.target.value)} />
             </Field>
 
-            <Field label="Start date">
-              <input style={S.input} type="date" value={draft.startDate} onChange={(e) => set("startDate", e.target.value)} />
+            <Field label="Score type">
+              <Select value={draft.scoreType} onChange={(v) => set("scoreType", v)} options={["time", "reps", "load", "points"]} />
             </Field>
 
-            <Field label="End date">
-              <input style={S.input} type="date" value={draft.endDate} onChange={(e) => set("endDate", e.target.value)} />
+            <Field label="Sort">
+              <Select value={draft.sort} onChange={(v) => set("sort", v)} options={["asc", "desc"]} />
             </Field>
 
-            <Field label="City">
-              <input style={S.input} value={draft.city} onChange={(e) => set("city", e.target.value)} placeholder="e.g. Leeds" />
+            <Field label="Unit">
+              <input style={S.input} value={draft.unit} onChange={(e) => set("unit", e.target.value)} placeholder="sec / reps / kg / pts" />
             </Field>
 
-            <Field label="Venue">
-              <input style={S.input} value={draft.venue} onChange={(e) => set("venue", e.target.value)} placeholder="e.g. Sports Hall" />
+            <Field label="Cap">
+              <input style={S.input} value={draft.cap} onChange={(e) => set("cap", e.target.value)} placeholder="e.g. 12:00" />
             </Field>
 
-            <Field label="Divisions (comma separated)">
-              <input
-                style={S.input}
-                value={(draft.divisions || []).join(", ")}
-                onChange={(e) => setArrFromCsv("divisions", e.target.value)}
-                placeholder="RX, Scaled, Masters 35+"
-              />
+            <Field label="Tiebreak">
+              <input style={S.input} value={draft.tiebreak} onChange={(e) => set("tiebreak", e.target.value)} placeholder="Optional" />
             </Field>
 
-            <Field label="Tags (comma separated)">
-              <input
-                style={S.input}
-                value={(draft.tags || []).join(", ")}
-                onChange={(e) => setArrFromCsv("tags", e.target.value)}
-                placeholder="pairs, outdoor, two-day"
-              />
-            </Field>
-
-            <Field label="Website">
-              <input style={S.input} value={draft.website} onChange={(e) => set("website", e.target.value)} placeholder="https://..." />
-            </Field>
-
-            <Field label="Instagram">
-              <input style={S.input} value={draft.instagram} onChange={(e) => set("instagram", e.target.value)} placeholder="@handle" />
+            <Field label="Equipment (comma separated)">
+              <input style={S.input} value={(draft.equipment || []).join(", ")} onChange={(e) => setCsv("equipment", e.target.value)} />
             </Field>
 
             <div style={{ gridColumn: "1 / -1" }}>
-              <Toggle checked={!!draft.regOpen} onChange={(v) => set("regOpen", v)} label="Registration open" hint="Used for filtering badges only (demo)." />
+              <Field label="Description">
+                <textarea
+                  style={{ ...S.input, minHeight: 90, resize: "vertical" }}
+                  value={draft.description}
+                  onChange={(e) => set("description", e.target.value)}
+                />
+              </Field>
             </div>
 
             <div style={{ gridColumn: "1 / -1" }}>
-              <Field label="Notes">
-                <textarea
-                  style={{ ...S.input, minHeight: 90, resize: "vertical" }}
-                  value={draft.notes}
-                  onChange={(e) => set("notes", e.target.value)}
-                  placeholder="Anything helpful for the listing…"
-                />
+              <Field label="Standards (comma separated)">
+                <input style={S.input} value={(draft.standards || []).join(", ")} onChange={(e) => setCsv("standards", e.target.value)} />
               </Field>
             </div>
           </div>
@@ -1594,7 +2106,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
             <Button onClick={onClose}>Cancel</Button>
             <Button variant="primary" onClick={() => onSave(draft)}>
-              Save
+              Save workout
             </Button>
           </div>
         </div>
@@ -1602,722 +2114,84 @@ export default function App() {
     );
   }
 
+  // datetime-local helpers (local time UI)
+  function isoToLocalInput(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const min = pad(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+  }
+
+  function localInputToIso(localValue) {
+    // localValue is "YYYY-MM-DDTHH:MM" interpreted in local time by Date()
+    if (!localValue) return "";
+    const d = new Date(localValue);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString();
+  }
+
   /* ================================
-     COMPETITION UI
-  ================================ */
-  const CompetitionPanel = () => {
-    const c = currentComp;
-    if (!c) return <div style={{ ...S.card, marginTop: 14 }}>No competition selected.</div>;
+     SETTINGS / ADMIN
+================================ */
+  const AdminPanel = () => (
+    <div style={{ ...S.row, marginTop: 14 }}>
+      <div style={{ flex: "1 1 760px", ...S.card }}>
+        <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin</div>
+        <div style={S.muted}>Global demo toggles. Organiser view includes the important qualifier controls.</div>
 
-    const privilegedCanSeeProvisional =
-      !data.settings.finalOnlyLeaderboard ||
-      (data.settings.allowProvisionalViewForJudges && (isJudge || isHeadJudge || isOrganiser));
+        <div style={S.divider} />
 
-    const showLeaderboard = !data.settings.hideLeaderboard;
-
-    return (
-      <div style={{ ...S.row, marginTop: 14 }}>
-        <div style={{ flex: "1 1 760px", ...S.card }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>{c.name}</div>
-              <div style={S.muted}>
-                {prettyDate(c.date)} • {c.location} • {c.description}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <Field label="Competition">
-                <Select
-                  value={data.ui.compId}
-                  onChange={(v) => setCompId(v)}
-                  options={data.competitions.map((x) => x.id)}
-                  style={{ width: 240 }}
-                />
-              </Field>
-
-              <div style={S.pill}>
-                <strong>View</strong>
-                <Select
-                  value={compView}
-                  onChange={(v) => setCompViewSafe(v)}
-                  options={["overview", "register", "scoring", "review", "leaderboard", "audit"]}
-                  style={{ padding: "6px 8px", borderRadius: 999 }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={S.divider} />
-
-          {/* Overview */}
-          {compView === "overview" ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-              <div style={S.card}>
-                <div style={{ fontWeight: 950 }}>Workouts</div>
-                <div style={{ height: 8 }} />
-                {(c.workouts || []).map((w) => (
-                  <div key={w.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "6px 0" }}>
-                    <div style={{ fontWeight: 750 }}>{w.name}</div>
-                    <div style={S.muted}>
-                      {w.scoring} ({w.sort})
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={S.card}>
-                <div style={{ fontWeight: 950 }}>Participants ({data.mode})</div>
-                <div style={{ height: 8 }} />
-                <div style={S.muted}>
-                  Switching mode changes who appears in registrations, scoring and leaderboard.
-                </div>
-                <div style={{ height: 10 }} />
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {participants.slice(0, 10).map((p) => (
-                    <span key={p} style={S.tag}>
-                      {p}
-                    </span>
-                  ))}
-                  {participants.length > 10 ? <span style={S.tag}>+{participants.length - 10}</span> : null}
-                </div>
-              </div>
-
-              <div style={S.card}>
-                <div style={{ fontWeight: 950 }}>Workflow status</div>
-                <div style={{ height: 8 }} />
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={S.pill}>
-                    <strong>Registration</strong> {data.settings.regClosed ? "Closed" : "Open"}
-                  </div>
-                  <div style={S.pill}>
-                    <strong>Approval</strong> {data.settings.requireApproval ? "Required" : "Not required"}
-                  </div>
-                  <div style={S.pill}>
-                    <strong>Leaderboard</strong>{" "}
-                    {data.settings.hideLeaderboard ? "Hidden" : data.settings.finalOnlyLeaderboard ? "Final-only" : "Provisional"}
-                  </div>
-                  {!privilegedCanSeeProvisional && data.settings.finalOnlyLeaderboard ? (
-                    <div style={{ ...S.muted }}>
-                      Final-only is enabled — spectators/athletes/team managers will not see pending scores.
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {/* Register */}
-          {compView === "register" ? (
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 950 }}>Registrations ({data.mode})</div>
-                <div style={S.muted}>
-                  {data.settings.regClosed ? "Registration is closed by settings toggle." : "Registration is open."}
-                </div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-                {participants.map((p) => {
-                  const reg = isRegistered(p);
-                  const meta = participantMeta.get(p) || {};
-                  return (
-                    <div key={p} style={{ ...S.card, padding: 12 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 950 }}>{p}</div>
-                          <div style={S.muted}>
-                            Division: <strong>{meta.division || "—"}</strong>
-                            {meta.type === "team" && meta.members?.length ? ` • Members: ${meta.members.join(", ")}` : ""}
-                          </div>
-                        </div>
-                        <span style={S.tag}>{reg ? "registered" : "not registered"}</span>
-                      </div>
-
-                      <div style={{ height: 10 }} />
-
-                      {(isAthlete || isTeamManager || isOrganiser) ? (
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          {!reg ? (
-                            <Button variant="primary" onClick={() => registerParticipant(p)} disabled={data.settings.regClosed}>
-                              Register
-                            </Button>
-                          ) : (
-                            <Button onClick={() => unregisterParticipant(p)} disabled={data.settings.regClosed}>
-                              Remove
-                            </Button>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={S.muted}>Only athlete/team manager/organiser can change registrations in this demo.</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {/* Scoring */}
-          {compView === "scoring" ? (
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 950 }}>Scoring</div>
-                <div style={S.muted}>
-                  Judges/organiser can submit scores. If approval required, scores enter the head judge queue.
-                </div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              <div style={{ ...S.card, padding: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  <Field label="Workout">
-                    <Select
-                      value={scoreDraft.workoutId}
-                      onChange={(v) => setScoreDraft((s) => ({ ...s, workoutId: v }))}
-                      options={(c.workouts || []).map((w) => w.id)}
-                    />
-                  </Field>
-
-                  <Field label={`Participant (${data.mode})`}>
-                    <Select
-                      value={scoreDraft.participant}
-                      onChange={(v) => setScoreDraft((s) => ({ ...s, participant: v }))}
-                      options={participants.length ? participants : ["—"]}
-                    />
-                  </Field>
-
-                  <Field label="Judge name (demo identity)">
-                    <Select
-                      value={scoreDraft.judgeName}
-                      onChange={(v) => setScoreDraft((s) => ({ ...s, judgeName: v }))}
-                      options={(c.judgePool || []).length ? c.judgePool : ["Judge"]}
-                    />
-                  </Field>
-
-                  <Field label="Score (number)">
-                    <input
-                      style={S.input}
-                      value={scoreDraft.value}
-                      onChange={(e) => setScoreDraft((s) => ({ ...s, value: e.target.value }))}
-                      placeholder="e.g. 245"
-                    />
-                  </Field>
-
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <Field label="Note (optional)">
-                      <input
-                        style={S.input}
-                        value={scoreDraft.note}
-                        onChange={(e) => setScoreDraft((s) => ({ ...s, note: e.target.value }))}
-                        placeholder="e.g. No-rep count, equipment issue…"
-                      />
-                    </Field>
-                  </div>
-                </div>
-
-                <div style={{ height: 12 }} />
-
-                <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
-                  <div style={S.muted}>
-                    Assigned judge for this lane:{" "}
-                    <strong>{assignedJudgeFor(scoreDraft.workoutId, scoreDraft.participant) || "—"}</strong>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <Button
-                      variant="primary"
-                      onClick={() => submitScore(scoreDraft.workoutId, scoreDraft.participant, scoreDraft.value, scoreDraft.judgeName, scoreDraft.note)}
-                      disabled={!canScore || !scoreDraft.workoutId || !scoreDraft.participant}
-                      title={!canScore ? "Switch role to judge or organiser" : ""}
-                    >
-                      Submit score
-                    </Button>
-
-                    <Button
-                      onClick={() =>
-                        setScoreDraft((s) => ({ ...s, value: String(Math.floor(Math.random() * 300) + 1) }))
-                      }
-                      disabled={!canScore}
-                    >
-                      Random demo score
-                    </Button>
-                  </div>
-                </div>
-
-                {!canScore ? (
-                  <div style={{ ...S.muted, marginTop: 10 }}>
-                    You’re currently <strong>{role}</strong>. Switch to <strong>judge</strong> or <strong>organiser</strong> to submit.
-                  </div>
-                ) : null}
-              </div>
-
-              <div style={S.divider} />
-
-              {/* Scoreboard snapshot */}
-              <div style={{ fontSize: 14, fontWeight: 950, marginBottom: 8 }}>Scores snapshot</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.table}>
-                  <thead>
-                    <tr>
-                      <th style={S.th}>Participant</th>
-                      {(c.workouts || []).map((w) => (
-                        <th key={w.id} style={S.th}>
-                          {w.name}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {participants.map((p) => (
-                      <tr key={p}>
-                        <td style={S.td}>
-                          <div style={{ fontWeight: 900 }}>{p}</div>
-                          <div style={S.muted}>{participantMeta.get(p)?.division || ""}</div>
-                        </td>
-                        {(c.workouts || []).map((w) => {
-                          const s = c.scores?.[w.id]?.[p];
-                          const badge =
-                            s?.status === "approved"
-                              ? "approved"
-                              : s?.status === "pending"
-                              ? "pending"
-                              : s?.status === "needs_change"
-                              ? "needs change"
-                              : "—";
-                          return (
-                            <td key={w.id} style={S.td}>
-                              {s ? (
-                                <>
-                                  <div style={{ fontWeight: 900 }}>
-                                    {s.value} {w.unit}
-                                  </div>
-                                  <div style={S.muted}>
-                                    {badge} • {s.judge}
-                                  </div>
-                                  {s.note ? <div style={{ ...S.muted, marginTop: 4 }}>“{s.note}”</div> : null}
-                                </>
-                              ) : (
-                                <div style={{ opacity: 0.5 }}>—</div>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : null}
-
-          {/* Review */}
-          {compView === "review" ? (
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 950 }}>Head Judge Review Queue</div>
-                <div style={S.muted}>
-                  {data.settings.requireApproval ? "Approval required is ON." : "Approval required is OFF (queue may be empty)."}
-                </div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              {!canReview ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 950 }}>You can’t review in this role.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>
-                    Switch to <strong>head_judge</strong> or <strong>organiser</strong> to approve/request change/override.
-                  </div>
-                </div>
-              ) : null}
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-                {(c.reviewQueue || []).map((item) => (
-                  <ReviewCard
-                    key={item.id}
-                    item={item}
-                    workout={c.workouts.find((w) => w.id === item.workoutId)}
-                    onApprove={() => approveQueueItem(item.id)}
-                    onRequestChange={(msg) => requestChangeQueueItem(item.id, msg)}
-                    onOverride={(v, note) => overrideQueueItem(item.id, v, note)}
-                    disabled={!canReview}
-                  />
-                ))}
-              </div>
-
-              {(c.reviewQueue || []).length === 0 ? (
-                <div style={{ ...S.card, marginTop: 12 }}>
-                  <div style={{ fontWeight: 950 }}>Queue is empty.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>
-                    Submit a score while “Require head judge approval” is ON to populate this list.
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* Leaderboard */}
-          {compView === "leaderboard" ? (
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 950 }}>Leaderboard</div>
-                <div style={S.muted}>
-                  {data.settings.hideLeaderboard ? "Leaderboard hidden by settings." : data.settings.finalOnlyLeaderboard ? "Final-only view enabled." : "Provisional view enabled."}
-                </div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              {!showLeaderboard ? (
-                <div style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontWeight: 950 }}>Leaderboard is hidden.</div>
-                  <div style={{ ...S.muted, marginTop: 6 }}>
-                    Toggle “Hide leaderboards” off in Settings / Admin to show it.
-                  </div>
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto" }}>
-                  <table style={S.table}>
-                    <thead>
-                      <tr>
-                        <th style={S.th}>Rank</th>
-                        <th style={S.th}>Name</th>
-                        <th style={S.th}>Division</th>
-                        <th style={S.th}>Total</th>
-                        {(c.workouts || []).map((w) => (
-                          <th key={w.id} style={S.th}>
-                            {w.name}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {leaderboard.map((row, i) => (
-                        <tr key={row.name}>
-                          <td style={S.td}>
-                            <div style={{ fontWeight: 950 }}>{i + 1}</div>
-                          </td>
-                          <td style={S.td}>
-                            <div style={{ fontWeight: 950 }}>{row.name}</div>
-                            {!isRegistered(row.name) ? <div style={S.muted}>Not registered (still scored)</div> : null}
-                          </td>
-                          <td style={S.td}>{row.division || "—"}</td>
-                          <td style={S.td}>
-                            <div style={{ fontWeight: 950 }}>{row.total}</div>
-                            <div style={S.muted}>
-                              {data.settings.finalOnlyLeaderboard && !privilegedCanSeeProvisional
-                                ? "Final-only"
-                                : data.settings.requireApproval
-                                ? "Approved + (optional pending)"
-                                : "All scores"}
-                            </div>
-                          </td>
-                          {(c.workouts || []).map((w) => {
-                            const d = row.breakdown[w.id];
-                            return (
-                              <td key={w.id} style={S.td}>
-                                {d ? (
-                                  <>
-                                    <div style={{ fontWeight: 900 }}>
-                                      {d.value} {d.unit}
-                                    </div>
-                                    <div style={S.muted}>{d.status}</div>
-                                  </>
-                                ) : (
-                                  <div style={{ opacity: 0.5 }}>—</div>
-                                )}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {leaderboard.length === 0 ? (
-                    <div style={{ ...S.card, marginTop: 12 }}>
-                      <div style={{ fontWeight: 950 }}>No leaderboard entries yet.</div>
-                      <div style={{ ...S.muted, marginTop: 6 }}>
-                        Submit some scores in the Scoring tab.
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {/* Audit */}
-          {compView === "audit" ? (
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 16, fontWeight: 950 }}>Audit Log</div>
-                <div style={S.muted}>Tracks demo actions (register/score/review) in this competition.</div>
-              </div>
-
-              <div style={{ height: 10 }} />
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {(c.audit || []).map((a) => (
-                  <div key={a.id} style={{ ...S.card, padding: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                      <div style={{ fontWeight: 950 }}>{a.message}</div>
-                      <div style={S.muted}>
-                        {new Date(a.at).toLocaleString("en-GB")} • {a.whoRole}
-                        {a.whoName ? ` (${a.whoName})` : ""}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {(c.audit || []).length === 0 ? (
-                  <div style={{ ...S.card, padding: 12 }}>
-                    <div style={{ fontWeight: 950 }}>No audit entries yet.</div>
-                    <div style={{ ...S.muted, marginTop: 6 }}>Register someone or submit a score to create entries.</div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Competition sidebar */}
-        <div style={{ flex: "0 0 360px", ...S.card, alignSelf: "flex-start" }}>
-          <div style={{ fontSize: 16, fontWeight: 950 }}>Competition Controls</div>
-
-          <div style={S.divider} />
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 12 }}>
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900 }}>Global controls</div>
+            <div style={{ height: 10 }} />
             <Toggle
-              checked={data.settings.regClosed}
-              onChange={() => toggleSetting("regClosed")}
-              label="Close registration"
-              hint="Blocks register/unregister in the demo UI."
+              checked={data.settings.hideLeaderboard}
+              onChange={() => toggleSetting("hideLeaderboard")}
+              label="Hide leaderboard"
             />
+            <div style={{ height: 10 }} />
             <Toggle
-              checked={data.settings.requireApproval}
-              onChange={() => toggleSetting("requireApproval")}
-              label="Require head judge approval"
-              hint="Score submissions go into review queue when ON."
+              checked={data.settings.submissionsClosed}
+              onChange={() => toggleSetting("submissionsClosed")}
+              label="Close submissions"
             />
+            <div style={{ height: 10 }} />
             <Toggle
               checked={data.settings.finalOnlyLeaderboard}
               onChange={() => toggleSetting("finalOnlyLeaderboard")}
               label="Final-only leaderboard"
-              hint="Non-privileged users won’t see pending scores."
+              hint="Non-staff see only head-judge-confirmed scores."
             />
+            <div style={{ height: 10 }} />
             <Toggle
-              checked={data.settings.hideLeaderboard}
-              onChange={() => toggleSetting("hideLeaderboard")}
-              label="Hide leaderboards"
-              hint="Removes leaderboard view entirely."
+              checked={data.settings.allowProvisionalForStaff}
+              onChange={() => toggleSetting("allowProvisionalForStaff")}
+              label="Allow provisional for staff"
+              hint="Staff can see submissions/awaiting adjustments even in final-only."
             />
           </div>
 
-          <div style={S.divider} />
-
-          <div style={{ fontWeight: 950, marginBottom: 8 }}>Judge assignments (demo)</div>
-          <div style={S.muted}>
-            Assignments are pre-seeded per workout. In a real build, you’d attach this to users + lanes.
-          </div>
-
-          <div style={{ height: 10 }} />
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {(c.workouts || []).map((w) => (
-              <div key={w.id} style={{ ...S.card, padding: 10 }}>
-                <div style={{ fontWeight: 900 }}>{w.name}</div>
-                <div style={{ height: 8 }} />
-                {Object.entries(c.judgeAssignments?.[w.id] || {}).map(([j, list]) => (
-                  <div key={j} style={{ ...S.muted, marginBottom: 6 }}>
-                    <strong>{j}:</strong> {(list || []).join(", ")}
-                  </div>
-                ))}
-                {Object.keys(c.judgeAssignments?.[w.id] || {}).length === 0 ? (
-                  <div style={S.muted}>No assignments.</div>
-                ) : null}
-              </div>
-            ))}
+          <div style={{ ...S.card, padding: 12 }}>
+            <div style={{ fontWeight: 900 }}>How the workflow works (demo)</div>
+            <div style={{ height: 8 }} />
+            <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.92 }}>
+              <li>Athlete/Team submits score (status: submitted)</li>
+              <li>Judge reviews and creates an adjustment (awaiting head judge)</li>
+              <li>Head Judge confirms → score becomes FINAL</li>
+              <li>Leaderboard shows provisional unless final-only is enabled</li>
+            </ol>
           </div>
         </div>
       </div>
-    );
-  };
-
-  function ReviewCard({ item, workout, onApprove, onRequestChange, onOverride, disabled }) {
-    const [changeMsg, setChangeMsg] = useState("");
-    const [overrideVal, setOverrideVal] = useState(String(item.value));
-    const [overrideNote, setOverrideNote] = useState("");
-
-    return (
-      <div style={{ ...S.card, padding: 12, opacity: disabled ? 0.75 : 1 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 950 }}>{item.participant}</div>
-            <div style={S.muted}>
-              {workout ? workout.name : item.workoutId} • Submitted by <strong>{item.judge}</strong>
-            </div>
-          </div>
-          <span style={S.tag}>pending</span>
-        </div>
-
-        <div style={{ height: 10 }} />
-
-        <div style={{ fontWeight: 900 }}>
-          Proposed score: {item.value} {workout?.unit || ""}
-        </div>
-        {item.note ? <div style={{ ...S.muted, marginTop: 6 }}>Note: “{item.note}”</div> : null}
-
-        <div style={S.divider} />
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Button variant="primary" onClick={onApprove} disabled={disabled}>
-            Approve
-          </Button>
-        </div>
-
-        <div style={{ height: 10 }} />
-
-        <div style={{ ...S.muted, fontWeight: 800, letterSpacing: 0.2 }}>Request change</div>
-        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-          <input
-            style={{ ...S.input, flex: 1 }}
-            value={changeMsg}
-            onChange={(e) => setChangeMsg(e.target.value)}
-            placeholder="e.g. verify reps / check time standard…"
-            disabled={disabled}
-          />
-          <SmallButton onClick={() => onRequestChange(changeMsg)} disabled={disabled}>
-            Send
-          </SmallButton>
-        </div>
-
-        <div style={{ height: 12 }} />
-
-        <div style={{ ...S.muted, fontWeight: 800, letterSpacing: 0.2 }}>Override</div>
-        <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-          <input
-            style={{ ...S.input, width: 140 }}
-            value={overrideVal}
-            onChange={(e) => setOverrideVal(e.target.value)}
-            placeholder="New value"
-            disabled={disabled}
-          />
-          <input
-            style={{ ...S.input, flex: 1 }}
-            value={overrideNote}
-            onChange={(e) => setOverrideNote(e.target.value)}
-            placeholder="Override note (optional)"
-            disabled={disabled}
-          />
-          <SmallButton onClick={() => onOverride(overrideVal, overrideNote)} disabled={disabled}>
-            Apply
-          </SmallButton>
-        </div>
-      </div>
-    );
-  }
-
-  /* ================================
-     ADMIN UI
-  ================================ */
-  const AdminPanel = () => {
-    return (
-      <div style={{ ...S.row, marginTop: 14 }}>
-        <div style={{ flex: "1 1 680px", ...S.card }}>
-          <div style={{ fontSize: 18, fontWeight: 950 }}>Settings / Admin</div>
-          <div style={S.muted}>Feature toggles + quick notes for turning this into a real product.</div>
-
-          <div style={S.divider} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12 }}>
-            <div style={S.card}>
-              <div style={{ fontWeight: 950 }}>Role & permissions (demo rules)</div>
-              <div style={{ height: 8 }} />
-              <ul style={{ margin: 0, paddingLeft: 18, opacity: 0.9 }}>
-                <li><strong>organiser</strong>: edit directory, submit scores, review/override, export/import</li>
-                <li><strong>head_judge</strong>: review/override scores</li>
-                <li><strong>judge</strong>: submit scores (assigned lanes enforced by judge name)</li>
-                <li><strong>athlete</strong>/<strong>team_manager</strong>: register/unregister</li>
-                <li><strong>spectator</strong>: read-only</li>
-              </ul>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ fontWeight: 950 }}>Feature toggles</div>
-              <div style={{ height: 10 }} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <Toggle checked={data.settings.hideLeaderboard} onChange={() => toggleSetting("hideLeaderboard")} label="Hide leaderboards" />
-                <Toggle checked={data.settings.regClosed} onChange={() => toggleSetting("regClosed")} label="Close registration" />
-                <Toggle checked={data.settings.requireApproval} onChange={() => toggleSetting("requireApproval")} label="Require head judge approval" />
-                <Toggle checked={data.settings.finalOnlyLeaderboard} onChange={() => toggleSetting("finalOnlyLeaderboard")} label="Final-only leaderboard" />
-                <Toggle
-                  checked={data.settings.allowProvisionalViewForJudges}
-                  onChange={() => toggleSetting("allowProvisionalViewForJudges")}
-                  label="Allow provisional view for judges"
-                  hint="If final-only is ON, judges/head judges/organisers can still see pending."
-                />
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ fontWeight: 950 }}>Import/Export expectations</div>
-              <div style={{ height: 8 }} />
-              <div style={S.muted}>
-                Import accepts either:
-                <ul style={{ marginTop: 8, paddingLeft: 18 }}>
-                  <li><strong>Full app JSON</strong> (contains <code>directory</code> and <code>competitions</code>)</li>
-                  <li><strong>Directory JSON</strong> with <code>{`{ events: [...] }`}</code> or <code>{`{ directory: { events: [...] } }`}</code></li>
-                </ul>
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={{ fontWeight: 950 }}>Next steps to go “real”</div>
-              <div style={{ height: 8 }} />
-              <div style={S.muted}>
-                Replace localStorage with API calls:
-                <ol style={{ marginTop: 8, paddingLeft: 18 }}>
-                  <li>Move <code>DEFAULT_DATA</code> seeding into your backend</li>
-                  <li>Create endpoints: directory events CRUD, comp scoring, approvals</li>
-                  <li>Attach judge assignments to authenticated users</li>
-                  <li>Persist audit log server-side for compliance</li>
-                </ol>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ flex: "0 0 360px", ...S.card, alignSelf: "flex-start" }}>
-          <div style={{ fontWeight: 950, fontSize: 16 }}>Build‑safe by design</div>
-          <div style={{ height: 10 }} />
-          <div style={S.muted}>
-            This file intentionally avoids:
-            <ul style={{ marginTop: 8, paddingLeft: 18 }}>
-              <li><code>@/</code> path aliases</li>
-              <li>shadcn UI imports</li>
-              <li>router configuration</li>
-              <li>non-ASCII corrupted strings</li>
-            </ul>
-            So it should run cleanly under a default Vite React setup.
-          </div>
-
-          <div style={S.divider} />
-
-          <Button variant="primary" onClick={() => setTab("directory")} style={{ width: "100%" }}>
-            Go to Directory
-          </Button>
-          <div style={{ height: 10 }} />
-          <Button variant="primary" onClick={() => setTab("competition")} style={{ width: "100%" }}>
-            Go to Competition
-          </Button>
-        </div>
-      </div>
-    );
-  };
+    </div>
+  );
 
   return (
     <div style={S.page}>
@@ -2325,8 +2199,8 @@ export default function App() {
         <Header />
         <Tabs />
 
-        {tab === "directory" ? <DirectoryPanel /> : null}
         {tab === "competition" ? <CompetitionPanel /> : null}
+        {tab === "directory" ? <DirectoryPanel /> : null}
         {tab === "admin" ? <AdminPanel /> : null}
       </div>
       <Toast />
